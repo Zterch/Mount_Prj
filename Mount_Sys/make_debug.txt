@@ -1,0 +1,74 @@
+zterch@zterch-TM1701:~/VS_Project/Mount_Prj/Mount_Sys/build$ make
+Scanning dependencies of target supr
+[  5%] Building C object supr/CMakeFiles/supr.dir/src/main.c.o
+[ 11%] Building C object supr/CMakeFiles/supr.dir/src/mot_supr.c.o
+[ 16%] Building C object supr/CMakeFiles/supr.dir/src/mot_upper_listener.c.o
+[ 22%] Building C object supr/CMakeFiles/supr.dir/__/share/mot_ctl.c.o
+[ 27%] Building C object supr/CMakeFiles/supr.dir/__/share/mot_share_daemon.c.o
+[ 33%] Building C object supr/CMakeFiles/supr.dir/__/share/mot_share_ipc.c.o
+[ 38%] Linking C executable supr
+[ 38%] Built target supr
+Scanning dependencies of target leader
+[ 44%] Building C object leader/CMakeFiles/leader.dir/src/main.c.o
+[ 50%] Building C object leader/CMakeFiles/leader.dir/src/mot_commu_ipc.c.o
+[ 55%] Building C object leader/CMakeFiles/leader.dir/src/mot_leader.c.o
+[ 61%] Building C object leader/CMakeFiles/leader.dir/src/mot_master.c.o
+In file included from /home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/include/mot_leader_defs.h:21,
+                 from /home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/src/mot_master.c:18:
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/src/mot_master.c: In function ‘destroy_slaves_inf’:
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/../share/list.h:67:41: warning: ISO C forbids braced-groups within expressions [-Wpedantic]
+   67 | #define container_of(ptr, type, member) ({                      \
+      |                                         ^
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/../share/list.h:395:5: note: in expansion of macro ‘container_of’
+  395 |     container_of(ptr, type, member)
+      |     ^~~~~~~~~~~~
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/../share/list.h:406:5: note: in expansion of macro ‘list_entry’
+  406 |     list_entry((ptr)->next, type, member)
+      |     ^~~~~~~~~~
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/../share/list.h:564:16: note: in expansion of macro ‘list_first_entry’
+  564 |     for (pos = list_first_entry(head, typeof(*pos), member),    \
+      |                ^~~~~~~~~~~~~~~~
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/src/mot_master.c:98:9: note: in expansion of macro ‘list_for_each_entry_safe’
+   98 |         list_for_each_entry_safe(i, tmp, &slaves_inf_list->list, list)
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/../share/list.h:67:41: warning: ISO C forbids braced-groups within expressions [-Wpedantic]
+   67 | #define container_of(ptr, type, member) ({                      \
+      |                                         ^
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/../share/list.h:395:5: note: in expansion of macro ‘container_of’
+  395 |     container_of(ptr, type, member)
+      |     ^~~~~~~~~~~~
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/../share/list.h:436:5: note: in expansion of macro ‘list_entry’
+  436 |     list_entry((pos)->member.next, typeof(*(pos)), member)
+      |     ^~~~~~~~~~
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/../share/list.h:565:13: note: in expansion of macro ‘list_next_entry’
+  565 |         n = list_next_entry(pos, member);            \
+      |             ^~~~~~~~~~~~~~~
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/src/mot_master.c:98:9: note: in expansion of macro ‘list_for_each_entry_safe’
+   98 |         list_for_each_entry_safe(i, tmp, &slaves_inf_list->list, list)
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/../share/list.h:67:41: warning: ISO C forbids braced-groups within expressions [-Wpedantic]
+   67 | #define container_of(ptr, type, member) ({                      \
+      |                                         ^
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/../share/list.h:395:5: note: in expansion of macro ‘container_of’
+  395 |     container_of(ptr, type, member)
+      |     ^~~~~~~~~~~~
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/../share/list.h:436:5: note: in expansion of macro ‘list_entry’
+  436 |     list_entry((pos)->member.next, typeof(*(pos)), member)
+      |     ^~~~~~~~~~
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/../share/list.h:567:23: note: in expansion of macro ‘list_next_entry’
+  567 |          pos = n, n = list_next_entry(n, member))
+      |                       ^~~~~~~~~~~~~~~
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/src/mot_master.c:98:9: note: in expansion of macro ‘list_for_each_entry_safe’
+   98 |         list_for_each_entry_safe(i, tmp, &slaves_inf_list->list, list)
+      |         ^~~~~~~~~~~~~~~~~~~~~~~~
+[ 66%] Building C object leader/CMakeFiles/leader.dir/src/mot_master_chassis.c.o
+[ 72%] Building C object leader/CMakeFiles/leader.dir/src/mot_master_magic.c.o
+/home/zterch/VS_Project/Mount_Prj/Mount_Sys/leader/src/mot_master_magic.c:14: warning: ISO C forbids an empty translation unit [-Wpedantic]
+   14 | 
+      | 
+[ 77%] Building C object leader/CMakeFiles/leader.dir/src/mot_master_serial.c.o
+[ 83%] Building C object leader/CMakeFiles/leader.dir/__/share/mot_ctl.c.o
+[ 88%] Building C object leader/CMakeFiles/leader.dir/__/share/mot_share_daemon.c.o
+[ 94%] Building C object leader/CMakeFiles/leader.dir/__/share/mot_share_ipc.c.o
+[100%] Linking C executable leader
+[100%] Built target leader
