@@ -2,8 +2,8 @@
  * @Author: Zterch jy.zterch@foxmail.com
  * @Date: 2026-05-26 18:01:45
  * @LastEditors: Zterch
- * @LastEditTime: 2026-06-12 08:34:00
- * @FilePath: /Mount_Sys/leader/include/mot_leader_defs.h
+ * @LastEditTime: 2026-07-02 10:02:38
+ * @FilePath: /Mount_Prj/Mount_Sys/leader/include/mot_leader_defs.h
  * @Description: 
  * 
  * Copyright (c) 2026 by jy.zterch@foxmail.com, All Rights Reserved. 
@@ -23,6 +23,19 @@
 #define USEC_PER_SEC		1000000
 #define NSEC_PER_SEC		1000000000
 
+// 新架构：每臂从站数量定义
+#define ARM_SLAVES_PER_ARM    7   // 每臂7个从站：3臂电机 + 1 RS485网关 + 3托板电机
+#define ARM_MOTOR_COUNT       6   // 每臂实际电机数量（6个电机从站，不含RS485网关）
+#define TOTAL_ARM_SLAVES      (MASTER_ARMS_MAX_SIZE * ARM_SLAVES_PER_ARM)  // 总共14个从站
+
+// 从站在臂内的索引定义
+#define ARM_MOTOR_1_IDX       0   // 臂电机1
+#define ARM_MOTOR_2_IDX       1   // 臂电机2
+#define ARM_MOTOR_3_IDX       2   // 臂电机3
+#define RS485_GATEWAY_IDX     3   // RS485转EtherCAT模块（无电机PDO）
+#define PALLET_MOTOR_1_IDX    4   // 托板电机1
+#define PALLET_MOTOR_2_IDX    5   // 托板电机2
+#define PALLET_MOTOR_3_IDX    6   // 托板电机3
 
 typedef enum
 {
@@ -57,6 +70,26 @@ typedef struct EK1100_slaves_inf
   struct list_head list;
 } EK1100_slaves_inf;
 
+
+// 从站类型枚举
+typedef enum {
+    SLAVE_TYPE_ARM_MOTOR = 0,     // 臂关节电机（SOMANET）
+    SLAVE_TYPE_RS485_GATEWAY,     // RS485转EtherCAT模块
+    SLAVE_TYPE_PALLET_MOTOR,      // 托板电机（SOMANET）
+    SLAVE_TYPE_UNKNOWN,           // 未知类型
+} SLAVE_TYPE_E;
+
+// 静态从站配置表项（替代EK1100动态检测）
+typedef struct {
+    uint16_t      alias;          // EtherCAT alias（通常0）
+    uint16_t      position;       // 总线绝对位置（0,1,2...13）
+    uint32_t      vendor_id;      // 厂商ID
+    uint32_t      product_code;   // 产品码
+    SLAVE_TYPE_E  type;           // 从站类型
+    uint8_t       arm_id;         // 所属臂ID（0=臂1，1=臂2）
+    const char    *name;          // 设备名称标识
+} SLAVE_CONFIG_T;
+
 typedef enum
 {
   S_SHUTDOWN   = 0,
@@ -77,6 +110,47 @@ typedef enum
   SR_CLOSE,
   SR_RUN,
 } S_STATE;
+
+
+typedef struct{
+    //MOTEC伺服电机使用到的
+    #if 0
+    {0x6040, 0x00, 16}, /* ControlWord */
+    {0x6060, 0x00, 8}, /* ModeOperation */
+    {0x607a, 0x00, 32}, /* Position target value */
+    {0x6042, 0x00, 16}, /* VITargVelocity */
+    {0x6071, 0x00, 16}, /* Target torque  */
+    {0x60c1, 0x01, 32}, /* s00_NumberEntries     */
+    {0x60ff, 0x00, 32}, /* Target velocity  */
+    {0x2031, 0x02, 16}, /* VDI_VirtualLevelCommSet       */
+
+    {0x603f, 0x00, 16}, /* ErrorCode */
+    {0x6041, 0x00, 16}, /* StatusWord */
+    {0x6061, 0x00, 8}, /* Modes of operation display */
+    {0x0000, 0x00, 8}, /* Gap */
+    {0x6064, 0x00, 32}, /* Position actual user value  */
+    {0x6063, 0x00, 32}, /* Position actual encoder value */
+    {0x6069, 0x00, 32}, /* Velocity sensor actual value  */
+    {0x606c, 0x00, 32}, /* Velocity actual value  */
+    {0x6077, 0x00, 16}, /* Torque actual value  */
+    {0x6078, 0x00, 16}, /* Current actual value  */
+    {0x200b, 0x05, 16}, /* InterTorqueRef        */
+    #endif
+    unsigned int ctrl_word;
+    unsigned int operation_mode;
+    unsigned int Target_position;
+    unsigned int target_velocity;
+    unsigned int torque_offset;
+
+    unsigned int status_word;
+    unsigned int mode_display;
+    unsigned int Position_value;
+    unsigned int Ext_Pos_value;
+    unsigned int velocity_value;
+    unsigned int Int_Pos_value;
+    unsigned int torque_act_value;
+    unsigned int torque_demand;
+}motec_pdos;
 
 #pragma pack(1)
 //定义伺服电机pdo交换的结构体,此结构体是IGH内部使用的，需要再定义使用的结构体
@@ -99,24 +173,7 @@ typedef struct{
     //uint16_t  damping_ratio_now;
 }motec_motors;
 
-typedef struct{
-    //伺服电机使用到的
-    unsigned int ctrl_word;
-    unsigned int operation_mode;
-    unsigned int Target_position;
-    unsigned int target_velocity;
-    unsigned int torque_offset;
 
-    unsigned int status_word;
-    unsigned int mode_display;
-    unsigned int Ext_Pos_value;
-    unsigned int velocity_value;
-    unsigned int Int_Pos_value;
-    unsigned int torque_act_value;
-    unsigned int torque_demand;
-
-
-}motec_pdos;
 
 //主站采集的传感器滤波结构体,2ms采集一次数据
 #define F_ARR_SIZE 500
@@ -229,16 +286,13 @@ typedef struct
  
 
 
-
   /*******************************输入整形算法****************************************/
-
-
 
   //记录额外的计算信息,Xm Xs Y Z
   #define CMD_VEL_MEAN_ERROR_SIZE 50
-  float cmd_vel_error[4];
-  float cmd_vel_mean_error_n[4];
-  float mean_errors[4][CMD_VEL_MEAN_ERROR_SIZE];
+  float cmd_vel_error[ARM_MOTOR_COUNT];
+  float cmd_vel_mean_error_n[ARM_MOTOR_COUNT];
+  float mean_errors[ARM_MOTOR_COUNT][CMD_VEL_MEAN_ERROR_SIZE];
 
   float xStartPos,yStartPos;
   float xSStartPos;
@@ -388,32 +442,32 @@ typedef struct
   //机械臂的个数，也就是EK1100的个数
   int armsSize;
   
-  //交换的pdo数据,一个arm下有4个电机
-  motec_pdos   somanet_pdo[MASTER_ARMS_MAX_SIZE][6];
+  //交换的pdo数据,一个arm下有7个从站
+  motec_pdos   somanet_pdo[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
 
  
 
 
-  motec_motors motors[MASTER_ARMS_MAX_SIZE][6];
+  motec_motors motors[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
 /****************************以下是igh主站使用 end*****************************/
 
 /****************************************上位机速度控制、位置控制*************************************/
   //上位机缓坡加速使用,上位机速度控制，采用固定加速度。单位mm
-  float  upper_target_velocity[MASTER_ARMS_MAX_SIZE][6];
-  float  upper_velocity_v0[MASTER_ARMS_MAX_SIZE][6];
+  float  upper_target_velocity[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
+  float  upper_velocity_v0[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
   uint8_t upper_target_v_Flag[MASTER_ARMS_MAX_SIZE];
-  float  upper_acc[MASTER_ARMS_MAX_SIZE][6];
-  float  upper_last_v_cmd[MASTER_ARMS_MAX_SIZE][6];
+  float  upper_acc[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
+  float  upper_last_v_cmd[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
  
   //上位机位置控制使用,上位机速度控制，采用固定加速度。单位mm
-  float  upper_target_pos[MASTER_ARMS_MAX_SIZE][4];
+  float  upper_target_pos[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
   #define    upper_pos_smooth_cnt 10 
-  float  upper_pos_vel_smooth[MASTER_ARMS_MAX_SIZE][4][upper_pos_smooth_cnt];
+  float  upper_pos_vel_smooth[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM][upper_pos_smooth_cnt];
   uint8_t upper_target_p_Flag[MASTER_ARMS_MAX_SIZE];
   int32_t upper_target_p_Kp_cnt[MASTER_ARMS_MAX_SIZE];
 
   //位置控制，最大加速度限制做平滑处理
-  float  target_p_last_cmdvel[MASTER_ARMS_MAX_SIZE][6];
+  float  target_p_last_cmdvel[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
 
 /*************end*/
 
@@ -424,14 +478,29 @@ typedef struct
 
 /**********************************伺服电机PDO*********************************/
   //速度指令mm
-  float  cmd_velocity[MASTER_ARMS_MAX_SIZE][4];
+  float  cmd_velocity[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
   
+  //x轴主从轴速度，y z轴速度，单位：mm/s
+  float xMExtSpeed[MASTER_ARMS_MAX_SIZE];
+  float xSExtSpeed[MASTER_ARMS_MAX_SIZE];
+  float xMIntSpeed[MASTER_ARMS_MAX_SIZE];
+  float xSIntSpeed[MASTER_ARMS_MAX_SIZE];
+  float ySpeed[MASTER_ARMS_MAX_SIZE];
+  float zSpeed[MASTER_ARMS_MAX_SIZE];
+  //x轴主从轴位置，y z轴位置 单位m
+  double xMExtPos[MASTER_ARMS_MAX_SIZE];
+  double xMIntPos[MASTER_ARMS_MAX_SIZE];
+  double xSIntPos[MASTER_ARMS_MAX_SIZE];
+  double xSExtPos[MASTER_ARMS_MAX_SIZE];
+
+  double yPos[MASTER_ARMS_MAX_SIZE];
+  double zPos[MASTER_ARMS_MAX_SIZE];
 
   //单元内轴当前力矩值
-  double torqueActual[MASTER_ARMS_MAX_SIZE][4];
+  double torqueActual[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
 
   //速度环生成的力矩
-  double torqueDemand[MASTER_ARMS_MAX_SIZE][4];
+  double torqueDemand[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
 
 
 
@@ -516,7 +585,7 @@ typedef struct
  
 /****************************以下是igh主站使用 end*****************************/
   //记录domain偏移量。
-  motec_motors nimotion_pdos[MOTEC_SIZE];
+  motec_pdos nimotion_pdos[MOTEC_SIZE];
   int           motor_size;
 
   //真实传输的PDO

@@ -2,8 +2,8 @@
  * @Author: Zterch jy.zterch@foxmail.com
  * @Date: 2026-05-28 11:10:59
  * @LastEditors: Zterch
- * @LastEditTime: 2026-06-16 16:29:27
- * @FilePath: /Mount_Sys/share/mot_share_messages.h
+ * @LastEditTime: 2026-07-02 18:27:42
+ * @FilePath: /Mount_Prj/Mount_Sys/share/mot_share_messages.h
  * @Description: 
  * 
  * Copyright (c) 2026 by jy.zterch@foxmail.com, All Rights Reserved. 
@@ -134,7 +134,7 @@ typedef struct
   uint16_t   mCRC;
 
   //可变长的数据,最短都是8位
-  char       *mData;
+  char       mData[0];
 
 } SUPR_R_MSG;
 
@@ -155,8 +155,20 @@ typedef struct
 #define CMD_IGH_CREATE_MASTERS   (CMD_BASE + 5)
 #define CMD_IGH_SCAN_SLAVES      (CMD_BASE + 6)
 
+#define CMD_IGH_START_OP         (CMD_BASE + 10)
+#define CMD_HAND_VEL_MM          (CMD_BASE + 11)
+#define CMD_HAND_RELA_POS_MM     (CMD_BASE + 12)
+#define CMD_HAND_ABS_POS_M       (CMD_BASE + 13)
+
+#define CMD_IGH_FSA_SHUTDOWN     (CMD_BASE + 14)
+#define CMD_IGH_FSA_SWITH_ON     (CMD_BASE + 15)
+#define CMD_IGH_FSA_ENOP         (CMD_BASE + 16)
+#define CMD_IGH_FSA_HALT         (CMD_BASE + 17)
+#define CMD_IGH_CLEAR_ERROR      (CMD_BASE + 18)
+
 
 #define CMD_DESTROY_MASTER       (CMD_BASE + 19)
+#define CMD_MASTER_OP_KEYDOWN    (CMD_BASE + 20)
 
 #pragma pack()
 

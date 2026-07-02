@@ -2,7 +2,7 @@
  * @Author: Zterch jy.zterch@foxmail.com
  * @Date: 2026-06-05 14:20:41
  * @LastEditors: Zterch
- * @LastEditTime: 2026-06-16 16:31:36
+ * @LastEditTime: 2026-06-25 10:04:53
  * @FilePath: /Mount_Sys/leader/src/mot_master_chassis.c
  * @Description: 
  * 
@@ -20,6 +20,45 @@
 #include "mot_ctl.h"
 #include "mot_commu_ipc.h"
 
+/*Config PDOs 只能使用nimotion默认的PDO进行配置*/
+static ec_pdo_entry_info_t ni_pdo_entries[] = {
+    {0x6040, 0x00, 16}, /* ControlWord */
+    {0x6060, 0x00, 8}, /* ModeOperation */
+    {0x0000, 0x00, 8}, /* Gap */
+    {0x607a, 0x00, 32}, /* Position target value */
+    {0x6042, 0x00, 16}, /* VITargVelocity */
+    {0x6071, 0x00, 16}, /* Target torque  */
+    {0x60c1, 0x01, 32}, /* s00_NumberEntries     */
+    {0x60ff, 0x00, 32}, /* Target velocity  */
+    {0x2031, 0x02, 16}, /* VDI_VirtualLevelCommSet       */
+
+    {0x603f, 0x00, 16}, /* ErrorCode */
+    {0x6041, 0x00, 16}, /* StatusWord */
+    {0x6061, 0x00, 8}, /* Modes of operation display */
+    {0x0000, 0x00, 8}, /* Gap */
+    {0x6064, 0x00, 32}, /* Position actual user value  */
+    {0x6063, 0x00, 32}, /* Position actual encoder value */
+    {0x6069, 0x00, 32}, /* Velocity sensor actual value  */
+    {0x606c, 0x00, 32}, /* Velocity actual value  */
+    {0x6077, 0x00, 16}, /* Torque actual value  */
+    {0x6078, 0x00, 16}, /* Current actual value  */
+    {0x200b, 0x05, 16}, /* InterTorqueRef        */
+};
+
+static ec_pdo_info_t ni_pdos[] = {
+    {0x1600, 9, ni_pdo_entries + 0}, /* RxPDO0 */
+    {0x1a00, 11, ni_pdo_entries + 9}, /* TxPDO0 */
+};
+
+static ec_sync_info_t motec_syncs[] = {
+    {0, EC_DIR_OUTPUT, 0, NULL, EC_WD_DISABLE},
+    {1, EC_DIR_INPUT, 0, NULL, EC_WD_DISABLE},
+    {2, EC_DIR_OUTPUT, 1, ni_pdos + 0, EC_WD_ENABLE},
+    {3, EC_DIR_INPUT, 1, ni_pdos + 1, EC_WD_DISABLE},
+    {0xff}
+};
+
+
 static int initchassis(CHASSIS_MASTER_THREAD_INFO *pTModule);
 
 
@@ -30,6 +69,9 @@ static void  filter_smooth(CHASSIS_MASTER_THREAD_INFO *pTModule);
 static int   destroyChassisMaster(CHASSIS_MASTER_THREAD_INFO *pTModule);
 static void  destroy_slaves_inf(EK1100_slaves_inf *slaves_inf_list);
 static int  createMaster(int mid,ec_master_t **pms,ec_domain_t **pdi);
+static int scanChassisSlaves(CHASSIS_MASTER_THREAD_INFO *pTModule);
+static void activeChassisMaterKeydown(CHASSIS_MASTER_THREAD_INFO *pTModule);
+static int     confChassisSlavesPdos(CHASSIS_MASTER_THREAD_INFO *pTModule);
 
 
 /**************************************************master bus***************************************************/
@@ -229,6 +271,164 @@ static int  destroyChassisMaster(CHASSIS_MASTER_THREAD_INFO *pTModule)
     destroy_slaves_inf(&pTModule->slaves_inf);
 }
 
+static int scanChassisSlaves(CHASSIS_MASTER_THREAD_INFO *pTModule)
+{
+  int iRet = -1;
+  if(!pTModule->master)
+    return iRet;
+
+  //创建slaves_inf头
+  destroy_slaves_inf(&pTModule->slaves_inf);
+  INIT_LIST_HEAD(&pTModule->slaves_inf.list);
+
+  //使用命令行，查询从站个数
+  FILE*fp = NULL;
+  char comm[64]="";
+  sprintf(comm,"sudo ethercat -m %d slave | wc -l",pTModule->masterId);
+  fp = popen(comm,"r");
+
+  int slavesize = 0;
+  if (fp != NULL)
+  {   
+      char buffer[100];
+      while (fgets(buffer, 100,fp) != NULL)
+          slavesize = atoi(buffer);
+
+      fclose(fp);          
+  }
+
+  for (int i = 0; i < slavesize; i++)
+  {
+    ec_slave_info_t slave_in;
+    if(ecrt_master_get_slave(pTModule->master,i,&slave_in)<0)
+      break;
+
+    EK1100_slaves_inf *childSlave = (EK1100_slaves_inf*)malloc(sizeof(EK1100_slaves_inf));
+    memset((char*)childSlave,0,sizeof(EK1100_slaves_inf));
+    memcpy(&childSlave->slave_in,&slave_in,sizeof(ec_slave_info_t));
+
+    list_add_tail(&childSlave->list,&pTModule->slaves_inf.list);
+    pTModule->slaves_inf.childSlaveSize++;
+
+    printf("********* %s %d %d \n", childSlave->slave_in.name,childSlave->slave_in.alias,childSlave->slave_in.position );
+  }
+  return 0;
+}
+
+static int confChassisSlavesPdos(CHASSIS_MASTER_THREAD_INFO *pTModule)
+{
+    if(pTModule->slaves_inf.childSlaveSize< 1)
+    {
+      printf("confSlavesPdos:底盘从站不存在\n\r");
+      return -1;
+    }
+
+    //遍历从站，找到所有伺服电机，并通过sdo配置所使用的pdo
+    int motorIndex=0;
+
+    EK1100_slaves_inf *inf_t = NULL ;
+    list_for_each_entry(inf_t, &pTModule->slaves_inf.list, list)
+    {
+        //创建从站时候一定不要使用alias，使用0 ，position的绝对位置测试
+        ec_slave_config_t * sc = ecrt_master_slave_config(pTModule->master, 0,inf_t->slave_in.position, inf_t->slave_in.vendor_id,inf_t->slave_in.product_code);
+
+        if(sc==NULL)
+        {
+            printf("ecrt_master_slave_config ********* NULL\n");
+            return -1;
+        }
+        inf_t->slave_conf = sc;
+        //机械臂的somanet结点，
+        if( (strstr(inf_t->slave_in.name,"PMM6020") != NULL) || 
+            (strstr(inf_t->slave_in.name,"PMM8075") != NULL) ||
+            (strstr(inf_t->slave_in.name,"PSM6040") != NULL)
+            )
+        {
+            ecrt_slave_config_sdo16(sc, 0x6040, 0, 0x80 );
+            ecrt_slave_config_sdo8(sc, 0x6060, 0, 9);
+            if (ecrt_slave_config_pdos(sc, EC_END, motec_syncs) == 0)
+            {
+                //配置域
+                pTModule->nimotion_pdos[motorIndex].ctrl_word = ecrt_slave_config_reg_pdo_entry(sc,0x6040, 0, pTModule->domain1, NULL);
+                pTModule->nimotion_pdos[motorIndex].operation_mode = ecrt_slave_config_reg_pdo_entry(sc,0x6060, 0, pTModule->domain1, NULL);
+                pTModule->nimotion_pdos[motorIndex].Target_position = ecrt_slave_config_reg_pdo_entry(sc,0x607A, 0, pTModule->domain1, NULL);
+                pTModule->nimotion_pdos[motorIndex].target_velocity = ecrt_slave_config_reg_pdo_entry(sc,0x60FF, 0, pTModule->domain1, NULL);
+                pTModule->nimotion_pdos[motorIndex].status_word = ecrt_slave_config_reg_pdo_entry(sc,0x6041, 0, pTModule->domain1, NULL);
+                pTModule->nimotion_pdos[motorIndex].mode_display = ecrt_slave_config_reg_pdo_entry(sc,0x6061, 0, pTModule->domain1, NULL);
+                pTModule->nimotion_pdos[motorIndex].Position_value = ecrt_slave_config_reg_pdo_entry(sc,0x6064, 0, pTModule->domain1, NULL);
+                pTModule->nimotion_pdos[motorIndex].velocity_value = ecrt_slave_config_reg_pdo_entry(sc,0x606c, 0, pTModule->domain1, NULL);
+            }
+            motorIndex++;
+        }
+        //机械臂的EC-3045结点，
+        if(strstr(inf_t->slave_in.name,"EC-3400") != NULL)
+        {   
+            printf("EC-3045 EC-3045\n");
+        }
+    }
+    pTModule->motor_size = motorIndex;
+    printf("###########################\n");
+    return 0;
+}
+
+static int activeChassisMater(CHASSIS_MASTER_THREAD_INFO *pTModule)
+{
+    int iRet = -1;
+    if(pTModule->slaves_inf.childSlaveSize< 1)
+      return iRet;
+    //设置DC时钟
+
+    EK1100_slaves_inf *inf_t = NULL;
+    list_for_each_entry(inf_t, &pTModule->slaves_inf.list, list)
+    {
+        //电机使用dc
+        if( (strstr(inf_t->slave_in.name,"PMM6020") != NULL) || 
+            (strstr(inf_t->slave_in.name,"PMM8075") != NULL) ||
+            (strstr(inf_t->slave_in.name,"PSM6040") != NULL))
+        {
+            ecrt_slave_config_dc(inf_t->slave_conf, 0x0300, 1000000, 0, 0, 0);
+            printf("PMM6020 ecrt_slave_config_dc \n");
+        }       
+    }
+    int ret = ecrt_master_select_reference_clock(pTModule->master, NULL);
+    if (ret < 0) {
+        printf("Failed to select reference clock\n");
+        return iRet;
+    }
+    
+    printf("Activating master...\n");
+    if (ecrt_master_activate(pTModule->master)) {
+        return iRet;
+    }
+    else
+    {
+        printf("*Master activated*\n");
+    }
+    if (!(pTModule->domain1_pd = ecrt_domain_data(pTModule->domain1))) {
+        printf("ecrt_domain_data EXIT_FAILURE\n");
+    }
+    printf("starting 1000HZ pdo\n");
+    //开启1000HZ循环
+    pTModule->masterActivated=true;
+
+    return 0;
+}
+
+static void activeChassisMaterKeydown(CHASSIS_MASTER_THREAD_INFO *pTModule)
+{
+    if(createMaster(pTModule->masterId,&pTModule->master,&pTModule->domain1) != 0)
+        return;
+
+    if(scanChassisSlaves(pTModule) != 0)
+        return;
+
+    if(confChassisSlavesPdos(pTModule) != 0)
+        return;
+
+    if(activeChassisMater(pTModule) != 0)
+        return;
+}
+
 static void  chassisLoopRecLocalMsg(CHASSIS_MASTER_THREAD_INFO *pTModule)
 {
     struct sockaddr_in  mPeerAddr;
@@ -274,51 +474,51 @@ static void  chassisLoopRecLocalMsg(CHASSIS_MASTER_THREAD_INFO *pTModule)
           destroyChassisMaster(pTModule);
           break;
         }
-        // case CMD_IGH_SCAN_SLAVES:
-        // {
-        //   scanChassisSlaves(pTModule);
-        //   break;
-        // }
+        case CMD_IGH_SCAN_SLAVES:
+        {
+          scanChassisSlaves(pTModule);
+          break;
+        }
         // case CMD_IGH_CONF_SERVO_PDOS:
         // {
         //   confChassisSlavesPdos(pTModule);
         //   break;
         // }
-        // case CMD_IGH_START_OP:
-        // {
-        //   activeChassisMater(pTModule);
-        //   break;
-        // }
-        // case CMD_MASTER_OP_KEYDOWN:
-        // {
-        //   activeChassisMaterKeydown(pTModule);
-        //   break;
-        // }
-        // case CMD_IGH_FSA_SHUTDOWN:
-        // {
-        //     pTModule->arm_fsa = S_SHUTDOWN;
-        //     break;
-        // }
-        // case CMD_IGH_FSA_SWITH_ON:
-        // {
-        //     pTModule->arm_fsa = S_SWITCH_ON;
-        //     break;
-        // }
-        // case CMD_IGH_FSA_ENOP:
-        // {
-        //     pTModule->arm_fsa = S_ENABLE_OP;
-        //     break;
-        // }
-        // case CMD_IGH_FSA_HALT:
-        // {
-        //     pTModule->arm_fsa = S_HAIT;
-        //     break;
-        // }  
-        // case CMD_IGH_CLEAR_ERROR:
-        // {
-        //     pTModule->arm_fsa = S_CLEAR_ERROR;
-        //     break;
-        // }
+        case CMD_IGH_START_OP:
+        {
+          activeChassisMater(pTModule);
+          break;
+        }
+        case CMD_MASTER_OP_KEYDOWN:
+        {
+          activeChassisMaterKeydown(pTModule);
+          break;
+        }
+        case CMD_IGH_FSA_SHUTDOWN:
+        {
+            pTModule->arm_fsa = S_SHUTDOWN;
+            break;
+        }
+        case CMD_IGH_FSA_SWITH_ON:
+        {
+            pTModule->arm_fsa = S_SWITCH_ON;
+            break;
+        }
+        case CMD_IGH_FSA_ENOP:
+        {
+            pTModule->arm_fsa = S_ENABLE_OP;
+            break;
+        }
+        case CMD_IGH_FSA_HALT:
+        {
+            pTModule->arm_fsa = S_HAIT;
+            break;
+        }  
+        case CMD_IGH_CLEAR_ERROR:
+        {
+            pTModule->arm_fsa = S_CLEAR_ERROR;
+            break;
+        }
         // case MSG_ID_ARMS_MAGIC_CTRL_MSG:
         // {
         //     MsgLongMsg *mLMsg = (MsgLongMsg *)mLocalData;

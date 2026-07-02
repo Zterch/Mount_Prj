@@ -2,7 +2,7 @@
  * @Author: Zterch jy.zterch@foxmail.com
  * @Date: 2026-05-28 10:54:39
  * @LastEditors: Zterch
- * @LastEditTime: 2026-06-12 08:33:25
+ * @LastEditTime: 2026-06-24 10:14:18
  * @FilePath: /Mount_Sys/share/mot_share_conf.h
  * @Description: 
  * 
@@ -31,7 +31,7 @@
 //master的名字
 
 //一个主站下，最多拥有的机械臂个数
-#define MASTER_ARMS_MAX_SIZE 1
+#define MASTER_ARMS_MAX_SIZE 2
 
 typedef enum {
   MN_ID_SUPR,

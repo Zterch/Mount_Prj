@@ -2,7 +2,7 @@
  * @Author: Zterch jy.zterch@foxmail.com
  * @Date: 2026-05-28 08:46:35
  * @LastEditors: Zterch
- * @LastEditTime: 2026-06-16 16:27:31
+ * @LastEditTime: 2026-07-02 18:32:10
  * @FilePath: /Mount_Sys/supr/src/mot_upper_listener.c
  * @Description: 
  * 
@@ -43,15 +43,6 @@ static uint16_t mUpperTimeOut = 0;
 
 
 
-
-
-
-
-
-
-
-
-
 static int32_t initListener(LISTENER_THREAD_INFO *pTModule);
 
 
@@ -61,6 +52,10 @@ static uint64_t getCurrentTime();
 static void LoopRecLocalMsg();
 
 static int32_t  sendAllMasterMsg(const int32_t mMsgId, const int32_t mNotice, const int32_t mValue,const char* mData, const int32_t mDSize);
+static int32_t  sendAllNoticeMsg(const int32_t mMsgId, const int32_t mNotice, const int32_t mValue);
+static int32_t  sendMasterNoticeMsg(MASTER_ID masterId,const int32_t mMsgId, const int32_t mNotice, const int32_t mValue);
+static int32_t  sendArmsMasterDataMsg(const int32_t mMsgId, const int32_t mNotice, const int32_t mValue,const char* mData, const int32_t mDSize);
+static int32_t  sendChassisMasterDataMsg(const int32_t mMsgId, const int32_t mNotice, const int32_t mValue,const char* mData, const int32_t mDSize);
 
 
 static int32_t  sendAllMasterMsg(const int32_t mMsgId, const int32_t mNotice, const int32_t mValue,const char* mData, const int32_t mDSize)
@@ -73,8 +68,39 @@ static int32_t  sendAllMasterMsg(const int32_t mMsgId, const int32_t mNotice, co
   return iret;
 }
 
+static int32_t  sendMasterNoticeMsg(MASTER_ID masterId,const int32_t mMsgId, const int32_t mNotice, const int32_t mValue)
+{
+   int iret = 0;
+   iret = MsgSendNotice(mLocalSoket, get_mn_master_port(masterId), MN_ID_SUPR, MN_ID_LEADER, mMsgId, mNotice, mValue);
+   return iret; 
+}
+
+static int32_t  sendAllNoticeMsg(const int32_t mMsgId, const int32_t mNotice, const int32_t mValue)
+{
+    int iret = 0;
+    iret = sendMasterNoticeMsg(MN_ID_MASTER_ARMS,mMsgId,mNotice,mValue);
+    iret = sendMasterNoticeMsg(MN_ID_MASTER_CHASSIS,mMsgId,mNotice,mValue);
+    return iret;
+}
 
 
+static int32_t  sendArmsMasterDataMsg(const int32_t mMsgId, const int32_t mNotice, const int32_t mValue,const char* mData, const int32_t mDSize)
+{
+  int iret = 0;
+
+  iret = MsgSendLongMsg(mLocalSoket, get_mn_master_port(MN_ID_MASTER_ARMS), MN_ID_SUPR, MN_ID_LEADER, mMsgId, mNotice, mValue, mData, mDSize);
+  
+  return iret;
+}
+
+static int32_t  sendChassisMasterDataMsg(const int32_t mMsgId, const int32_t mNotice, const int32_t mValue,const char* mData, const int32_t mDSize)
+{
+  int iret = 0;
+
+  iret = MsgSendLongMsg(mLocalSoket, get_mn_master_port(MN_ID_MASTER_CHASSIS), MN_ID_SUPR, MN_ID_LEADER, mMsgId, mNotice, mValue, mData, mDSize);
+  
+  return iret;
+}
 
 /******************************************************************************
 * 功能：初始化supr变量
@@ -247,8 +273,18 @@ static void LoopRecUpperMsg()
           sendAllMasterMsg(CMD_DESTROY_MASTER,0,0,0,0);
           break;
         }
-
-                //扫描从站
+        case CMD_IGH_START_OP:
+        {
+          sendMasterNoticeMsg(MN_ID_MASTER_ARMS,mMsg->mCmd,0,0);
+          break;
+        }
+        case CMD_IGH_CLEAR_ERROR:
+        {
+          sendChassisMasterDataMsg(mMsg->mCmd,0,0,(char*)mMsg,recSize);
+          sendArmsMasterDataMsg(mMsg->mCmd,0,0,(char*)mMsg,recSize);
+          break;
+        }
+        //扫描从站
         case CMD_IGH_CREATE_MASTERS:
         case CMD_DESTROY_MASTER:
         case CMD_IGH_SCAN_SLAVES:
@@ -257,9 +293,32 @@ static void LoopRecUpperMsg()
           break;
         }
        
+        case CMD_MASTER_OP_KEYDOWN:
+        {
+          sendAllMasterMsg(mMsg->mCmd,0,*mMsg->mData,0,0);
+          break;
+        }
+        case CMD_IGH_FSA_SHUTDOWN:
+        case CMD_IGH_FSA_SWITH_ON:
+        case CMD_IGH_FSA_ENOP:
+        case CMD_IGH_FSA_HALT:
+        {
+          sendAllNoticeMsg(mMsg->mCmd,0,0);
+          break;
+        }
+
+        case CMD_HAND_VEL_MM:
+        case CMD_HAND_RELA_POS_MM:
+        case CMD_HAND_ABS_POS_M:
+        {
+          sendArmsMasterDataMsg(mMsg->mCmd,0,0,(char*)mMsg,recSize);
+          break;
+        }
+
         default:{
           break;
         }
+
       } //end switch
       lastRecHeartTime = getCurrentTime();
     }

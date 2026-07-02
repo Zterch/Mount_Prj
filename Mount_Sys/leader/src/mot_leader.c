@@ -2,8 +2,8 @@
  * @Author: Zterch jy.zterch@foxmail.com
  * @Date: 2026-05-28 08:41:49
  * @LastEditors: Zterch
- * @LastEditTime: 2026-06-09 14:36:01
- * @FilePath: /Mount_Sys/leader/src/mot_leader.c
+ * @LastEditTime: 2026-06-26 08:57:23
+ * @FilePath: /Mount_Prj/Mount_Sys/leader/src/mot_leader.c
  * @Description: 系统中的超级线程模块，此模块负责创建所有线程，管理其他模块，周期的发送
 消息通知其他模块。
  * 
@@ -49,7 +49,6 @@ ARMS_MASTER_THREAD_INFO mArmsModule;
 CHASSIS_MASTER_THREAD_INFO mChassisModule;
 //串口线程，主要负责读写底盘器件并交换数据
 SERIAL_THREAD_INFO mSerialWorker; 
-
 
 
 static void single_proc_inst_lockfile_cleanup(void);

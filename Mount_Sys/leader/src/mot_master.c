@@ -2,8 +2,8 @@
  * @Author: Zterch jy.zterch@foxmail.com
  * @Date: 2026-05-28 08:42:07
  * @LastEditors: Zterch
- * @LastEditTime: 2026-06-16 16:50:10
- * @FilePath: /Mount_Sys/leader/src/mot_master.c
+ * @LastEditTime: 2026-07-02 10:02:35
+ * @FilePath: /Mount_Prj/Mount_Sys/leader/src/mot_master.c
  * @Description: 
  * 
  * Copyright (c) 2026 by jy.zterch@foxmail.com, All Rights Reserved. 
@@ -52,6 +52,48 @@ static int32_t armsFsa(ARMS_MASTER_THREAD_INFO *pTModule);
 void* ethercatBusThread(void* );
 static void reflash_tpdo_Ebus(ARMS_MASTER_THREAD_INFO *pTModule);
 static void reflash_rpdo_Ebus(ARMS_MASTER_THREAD_INFO *pTModule);
+
+static int  scanSlaves(ARMS_MASTER_THREAD_INFO *pTModule);
+static void   upperFSASomanets(ARMS_MASTER_THREAD_INFO *pTModule,S_ETHR_STATE fsastate);
+static void   clearErrorSomanets(ARMS_MASTER_THREAD_INFO *pTModule,SUPR_R_MSG *mSMsg);
+static void  upperAngularVelSomanets(ARMS_MASTER_THREAD_INFO *pTModule,SUPR_R_MSG *mSMsg);
+static int32_t handleStartSlight(ARMS_MASTER_THREAD_INFO *pTModule,int armsid,float v0,float v1,float v2,float v3,float v4,float v5,float acc_mm);
+static void  upperRelaPosSomanets(ARMS_MASTER_THREAD_INFO *pTModule,SUPR_R_MSG *mSMsg);
+static void  upperAbsPosSomanets(ARMS_MASTER_THREAD_INFO *pTModule,SUPR_R_MSG *mSMsg);
+static void    activeMaterKeydown(ARMS_MASTER_THREAD_INFO *pTModule);
+static int  confSlavesPdos(ARMS_MASTER_THREAD_INFO *pTModule);
+static int  activeMater(ARMS_MASTER_THREAD_INFO *pTModule);
+static void  confSomanetCSVPdos(ec_domain_t *domain1,ec_slave_info_t *inf,ec_slave_config_t *sc,motec_pdos * ppdos);
+static void confRS485GatewayPdos(ec_domain_t *domain1, ec_slave_info_t *inf, ec_slave_config_t *sc);
+
+/******************************************************************************
+ * 新架构静态从站配置表（替代EK1100动态检测）
+ * 连接顺序：PC -> 臂1(电机1->电机2->电机3->RS485网关->托板电机1->托板电机2->托板电机3)
+ *           -> 臂2(电机1->电机2->电机3->RS485网关->托板电机1->托板电机2->托板电机3)
+ * 
+ * 注意：请根据实际设备的 vendor_id 和 product_code 修改以下值！
+ *       可用命令查看：sudo ethercat slaves -v
+ ******************************************************************************/
+static const SLAVE_CONFIG_T g_slave_config[TOTAL_ARM_SLAVES] = {
+    /* ========== 机械臂1 (arm_id=0) ========== */
+    {0,  0, 0x000007CF, 0x50101611, SLAVE_TYPE_ARM_MOTOR,   0, "MOTEC_DC_SERVO"},
+    {0,  1, 0x000007CF, 0x50101611, SLAVE_TYPE_ARM_MOTOR,   0, "MOTEC_DC_SERVO"},
+    {0,  2, 0x000007CF, 0x50101611, SLAVE_TYPE_ARM_MOTOR,   0, "MOTEC_DC_SERVO"},
+    {0,  3, 0x00000B95, 0x00001400, SLAVE_TYPE_RS485_GATEWAY, 0, "AMSAMOTION_EC_MB"},
+    {0,  4, 0x000007CF, 0x50101611, SLAVE_TYPE_PALLET_MOTOR, 0, "MOTEC_DC_SERVO"},
+    {0,  5, 0x000007CF, 0x50101611, SLAVE_TYPE_PALLET_MOTOR, 0, "MOTEC_DC_SERVO"},
+    {0,  6, 0x000007CF, 0x50101611, SLAVE_TYPE_PALLET_MOTOR, 0, "MOTEC_DC_SERVO"},
+    
+    /* ========== 机械臂2 (arm_id=1) ========== */
+    {0,  7, 0x000007CF, 0x50101611, SLAVE_TYPE_ARM_MOTOR,   1, "MOTEC_DC_SERVO"},
+    {0,  8, 0x000007CF, 0x50101611, SLAVE_TYPE_ARM_MOTOR,   1, "MOTEC_DC_SERVO"},
+    {0,  9, 0x000007CF, 0x50101611, SLAVE_TYPE_ARM_MOTOR,   1, "MOTEC_DC_SERVO"},
+    {0, 10, 0x00000B95, 0x00001400, SLAVE_TYPE_RS485_GATEWAY, 1, "AMSAMOTION_EC_MB"},
+    {0, 11, 0x000007CF, 0x50101611, SLAVE_TYPE_PALLET_MOTOR, 1, "MOTEC_DC_SERVO"},
+    {0, 12, 0x000007CF, 0x50101611, SLAVE_TYPE_PALLET_MOTOR, 1, "MOTEC_DC_SERVO"},
+    {0, 13, 0x000007CF, 0x50101611, SLAVE_TYPE_PALLET_MOTOR, 1, "MOTEC_DC_SERVO"},
+};
+
 
 static void  destroyMaster(ARMS_MASTER_THREAD_INFO *pTModule)
 {
@@ -281,6 +323,502 @@ static int  handle_module_exit(ARMS_MASTER_THREAD_INFO *pTModule)
 }
 
 
+static int  scanSlaves(ARMS_MASTER_THREAD_INFO *pTModule)
+{
+  int iRet = -1;
+  if(!pTModule->master)
+    return iRet;
+
+  //创建slaves_inf头
+  for (int i = 0; i < MASTER_ARMS_MAX_SIZE; i++)
+  {    
+    destroy_slaves_inf(&pTModule->slaves_inf[i]);
+    INIT_LIST_HEAD(&pTModule->slaves_inf[i].list);
+  }
+
+
+  //使用命令行，查询从站个数
+  FILE *fp = NULL;
+  char comm[64]="";
+  sprintf(comm,"sudo ethercat -m %d slave | wc -l",pTModule->masterId);
+  fp = popen(comm,"r");
+
+  int actual_slave_size = 0;
+  if (fp != NULL)
+  {   
+      char buffer[100];
+      while (fgets(buffer, 100, fp) != NULL)
+          actual_slave_size = atoi(buffer);
+
+      fclose(fp);          
+  }
+  if(actual_slave_size != TOTAL_ARM_SLAVES) {
+    printf("警告: 实际从站数(%d)与配置表(%d)不匹配！请检查接线或配置。\n", 
+               actual_slave_size, TOTAL_ARM_SLAVES);
+  }
+
+    for (int i = 0; i < TOTAL_ARM_SLAVES; i++) {
+    const SLAVE_CONFIG_T *cfg = &g_slave_config[i];
+    ec_slave_info_t slave_in;
+    
+    // 从主站获取该position的实际从站信息
+    if(ecrt_master_get_slave(pTModule->master, cfg->position, &slave_in) < 0)
+    {
+        printf("获取从站 %d 信息失败\n", cfg->position);
+        break;
+    }
+
+    // 分配从站信息节点
+    EK1100_slaves_inf *childSlave = (EK1100_slaves_inf*)malloc(sizeof(EK1100_slaves_inf));
+    memset((char*)childSlave, 0, sizeof(EK1100_slaves_inf));
+    memcpy(&childSlave->slave_in, &slave_in, sizeof(ec_slave_info_t));
+    
+    childSlave->masteri = pTModule->masterId;
+    
+    // 添加到对应臂的链表
+    list_add_tail(&childSlave->list, &pTModule->slaves_inf[cfg->arm_id].list);
+    pTModule->slaves_inf[cfg->arm_id].childSlaveSize++;
+
+    printf("&&&&&&& [%s] 臂%d 位置%d: %s (vendor:0x%08X product:0x%08X)\n", 
+            cfg->type == SLAVE_TYPE_RS485_GATEWAY ? "网关" : 
+            cfg->type == SLAVE_TYPE_PALLET_MOTOR ? "托板" : "臂电机",
+            cfg->arm_id, cfg->position, 
+            childSlave->slave_in.name,
+            childSlave->slave_in.vendor_id,
+            childSlave->slave_in.product_code);
+  }
+  //设置从站个数、arms的个数
+  pTModule->slaves_size = TOTAL_ARM_SLAVES;
+  pTModule->armsSize = MASTER_ARMS_MAX_SIZE;
+  printf("扫描完成: 总共%d个从站, %d套臂, 每臂%d个从站\n", 
+           pTModule->slaves_size, pTModule->armsSize, ARM_SLAVES_PER_ARM);
+  return 0;
+}
+
+
+static void  confSomanetCSVPdos(ec_domain_t *domain1,ec_slave_info_t *inf,ec_slave_config_t *sc,motec_pdos * ppdos)
+{
+    /*Config PDOs*/
+    uint8_t rpdo_entries_size = 5;
+    uint8_t tpdo_entries_size = 7;
+    ec_pdo_entry_info_t rpdo_entries[] = {
+        /*RxPdo 0x1600*/
+        {0x6040, 0x00, 16},
+        {0x6060, 0x00, 8},
+        {0x607A, 0x00, 32},
+        {0x60FF, 0x00, 32},
+        {0x60B2, 0x00, 16},
+    };
+    ec_pdo_entry_info_t tpdo_entries[] = {
+        /*TxPdo 0x1A00*/
+        {0x6041, 0x00, 16},
+        {0x6061, 0x00, 8},
+        {0x6064, 0x00, 32},
+        {0x606C, 0x00, 32},
+        {0x2111, 0x02, 32},
+        {0x6077, 0x00, 16},
+        {0x6074, 0x00, 16}
+    };
+
+    ec_pdo_info_t ec_rpdos[] = {
+        //RxPdo
+        {0x1600, rpdo_entries_size, rpdo_entries + 0 }, /*recive pdo maping*/
+    };
+    ec_pdo_info_t ec_tpdos[] = {
+        //TxPdo
+        {0x1A00, tpdo_entries_size, tpdo_entries + 0 } /*send pdo maping*/
+    };
+
+    /*
+     通过ethercat命令行可以看到和pdo相关的几个数据结构，主站中也是通过链表这么存储的。如果从站支持邮箱协议，0,1默认给邮箱通信使用。
+     SM(Sync manager index):0 邮箱数据
+     SM(Sync manager index):1 邮箱数据
+     SM(Sync manager index):2 pdos 0x1600 ...
+                                          多个pdo条目
+     SM(Sync manager index):3 pdos 0x1a00 ...
+                                          多个pdo条目
+     */
+    ec_sync_info_t servo_syncs[] = {
+        { 0, EC_DIR_OUTPUT, 0, NULL, EC_WD_DISABLE },
+        { 1, EC_DIR_INPUT, 0, NULL, EC_WD_DISABLE },
+        { 2, EC_DIR_OUTPUT, 1, ec_rpdos + 0, EC_WD_DISABLE },
+        { 3, EC_DIR_INPUT, 1, ec_tpdos + 0, EC_WD_DISABLE },
+        { 0xFF}
+    };
+    
+
+    //清除伺服错误
+    ecrt_slave_config_sdo16( sc, 0x6040, 0, 0x80 );
+    ecrt_slave_config_sdo16( sc, 0x2010, 0x0a, 0x07D0);
+    ecrt_slave_config_sdo16( sc, 0x2010, 0x0b, 0x07D0);
+    #if 0
+    //配置RPDO
+    /* Clear RxPdo */
+    ecrt_slave_config_sdo8( sc, 0x1C12, 0, 0 ); /* clear sm pdo 0x1c12 */
+    ecrt_slave_config_sdo8( sc, 0x1600, 0, 0 ); /* clear RxPdo 0x1600 */
+    ecrt_slave_config_sdo8( sc, 0x1601, 0, 0 ); /* clear RxPdo 0x1601 */
+    ecrt_slave_config_sdo8( sc, 0x1602, 0, 0 ); /* clear RxPdo 0x1602 */
+    ecrt_slave_config_sdo8( sc, 0x1603, 0, 0 ); /* clear RxPdo 0x1603 */
+
+    ecrt_slave_config_sdo32( sc, 0x1600, 1, 0x60400010 ); /* 0x6040:0/16bits, control word */
+    ecrt_slave_config_sdo32( sc, 0x1600, 2, 0x60600008 ); /* 0x6060:0/8bits  ,Modes of operation */              
+    ecrt_slave_config_sdo32( sc, 0x1600, 3, 0x607A0020 ); /* 0x607A:0/32bits ,Target position  */
+    ecrt_slave_config_sdo32( sc, 0x1600, 4, 0x60FF0020 ); /* 0x60FF:0/32bits ,target velocity  */
+    ecrt_slave_config_sdo32( sc, 0x1600, 5, 0x60B20010 ); /* 0x60B2:0/16bits ,Torque offset  */
+    //ecrt_slave_config_sdo32( sc, 0x1600, 6, 0x20100a10 ); /* 0x2010:0a/16bits ,Setting time  */
+    //ecrt_slave_config_sdo32( sc, 0x1600, 7, 0x20100b10 ); /* 0x2010:0b/16bits ,Damping radio  */
+
+    ecrt_slave_config_sdo8(  sc, 0x1600, 0, rpdo_entries_size); /* set number of PDO entries for 0x1600 */
+    ecrt_slave_config_sdo16( sc, 0x1C12, 1, 0x1600 ); /* list all RxPdo in 0x1C12:1-4 */
+    ecrt_slave_config_sdo8(  sc, 0x1C12, 0, 1 ); /* set number of RxPDO */
+
+    //配置TPDO
+    ecrt_slave_config_sdo8( sc, 0x1C13, 0, 0 ); /* clear sm pdo 0x1c13 */
+    ecrt_slave_config_sdo8( sc, 0x1A00, 0, 0 ); /* clear TxPdo 0x1A00 */
+    ecrt_slave_config_sdo8( sc, 0x1A01, 0, 0 ); /* clear TxPdo 0x1A01 */
+    ecrt_slave_config_sdo8( sc, 0x1A02, 0, 0 ); /* clear TxPdo 0x1A02 */
+    ecrt_slave_config_sdo8( sc, 0x1A03, 0, 0 ); /* clear TxPdo 0x1A03 */
+    /* Define TxPdo */
+    ecrt_slave_config_sdo32( sc, 0x1A00, 1, 0x60410010 ); /* 0x6041:0/16bits, status word */
+    ecrt_slave_config_sdo32( sc, 0x1A00, 2, 0x60610010 ); /* 0x6061:0/8bits,  mode of operation display*/
+    ecrt_slave_config_sdo32( sc, 0x1A00, 3, 0x60640020 );  /* 0x6064:0/32bits, act position */
+    ecrt_slave_config_sdo32( sc, 0x1A00, 4, 0x606C0020 );  /* 0x606c:0/32bits, act velocity */
+    
+    //双编码器使用
+    ecrt_slave_config_sdo32( sc, 0x1A00, 5, 0x21110220 );  /* 0x606c:0/32bits, encoder1 pos */
+    ecrt_slave_config_sdo32( sc, 0x1A00, 6, 0x60770010 );  /* 0x6077:0/16bits, torque act value */
+    ecrt_slave_config_sdo32( sc, 0x1A00, 7, 0x20100a10 );  /* 2010:0a/316bits, setting time */
+    ecrt_slave_config_sdo32( sc, 0x1A00, 8, 0x20100b10 );  /* 0x2010:0b/16bits, damping ratio */
+
+    ecrt_slave_config_sdo8(  sc, 0x1A00, 0, tpdo_entries_size ); /* set number of PDO entries for 0x1A00 */
+    ecrt_slave_config_sdo16( sc, 0x1C13, 1, 0x1A00 ); /* list all TxPdo in 0x1C13:1-4 */
+    ecrt_slave_config_sdo8(  sc, 0x1C13, 0, 1 ); /* set number of TxPDO */
+   #endif
+    //ecrt_slave_config_sdo8( sc, 0x6060, 0, 9);
+
+    if (ecrt_slave_config_pdos(sc, EC_END, servo_syncs))
+    {
+        printf("Failed to configure servo PDOs!\n");
+    }
+    else
+    {
+        printf("*Success to configuring servo PDOs*\n");
+    }
+
+    ppdos->ctrl_word = ecrt_slave_config_reg_pdo_entry(sc,0x6040, 0, domain1, NULL);
+    ppdos->operation_mode = ecrt_slave_config_reg_pdo_entry(sc,0x6060, 0, domain1, NULL);
+    ppdos->Target_position = ecrt_slave_config_reg_pdo_entry(sc,0x607A, 0, domain1, NULL);
+    ppdos->target_velocity = ecrt_slave_config_reg_pdo_entry(sc,0x60FF, 0, domain1, NULL);
+    ppdos->torque_offset  =  ecrt_slave_config_reg_pdo_entry(sc,0x60B2, 0, domain1, NULL);
+
+    ppdos->status_word = ecrt_slave_config_reg_pdo_entry(sc,0x6041, 0, domain1, NULL);
+    ppdos->mode_display = ecrt_slave_config_reg_pdo_entry(sc,0x6061, 0, domain1, NULL);
+    ppdos->Ext_Pos_value = ecrt_slave_config_reg_pdo_entry(sc,0x6064, 0, domain1, NULL);
+    ppdos->velocity_value = ecrt_slave_config_reg_pdo_entry(sc,0x606c, 0, domain1, NULL);
+    ppdos->Int_Pos_value = ecrt_slave_config_reg_pdo_entry(sc,0x2111, 2, domain1, NULL);
+    ppdos->torque_act_value = ecrt_slave_config_reg_pdo_entry(sc,0x6077, 0, domain1, NULL);
+    ppdos->torque_demand = ecrt_slave_config_reg_pdo_entry(sc,0x6074, 0, domain1, NULL);
+    
+    //ppdos->setting_time_now   =  ecrt_slave_config_reg_pdo_entry(sc,0x2010, 0x0a, domain1, NULL);
+    //ppdos->damping_ratio_now   =  ecrt_slave_config_reg_pdo_entry(sc,0x2010, 0x0b, domain1, NULL);
+}
+
+static void confRS485GatewayPdos(ec_domain_t *domain1, ec_slave_info_t *inf, ec_slave_config_t *sc)
+{
+    // AMSAMOTION_EC_MB 网关不通过标准电机PDO控制
+    // 如果后续需要通过PDO控制网关，在此处添加配置
+    printf("配置RS485网关: %s (position=%d)\n", inf->name, inf->position);
+    
+    // 示例：如果网关有简单的输入输出PDO，可以在这里配置
+    // 目前仅输出日志，不注册PDO条目
+}
+
+static void  upperFSASomanets(ARMS_MASTER_THREAD_INFO *pTModule,S_ETHR_STATE fsastate)
+{
+    for (int i = 0; i < pTModule->armsSize; i++)
+    {
+        pTModule->arm_fsa[i] = fsastate;
+    }
+}
+
+static void clearErrorSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *mSMsg)
+{
+    for (int i = 0; i < MASTER_ARMS_MAX_SIZE; i++)
+    {
+        if(mSMsg->mModuleFlag[i])
+        {
+            for (int j = 0; j < ARM_SLAVES_PER_ARM; j++)
+            {
+                // 跳过RS485网关
+                if(g_slave_config[i*ARM_SLAVES_PER_ARM+j].type == SLAVE_TYPE_RS485_GATEWAY)
+                    continue;
+                pTModule->motors[i][j].target_velocity = 0;
+                pTModule->motors[i][j].ctrl_word = 0x80;
+            }
+        }
+    }
+}
+
+static int32_t handleStartSlight(ARMS_MASTER_THREAD_INFO *pTModule,int armsid,float v0,float v1,float v2,float v3,float v4,float v5,float acc_mm)
+{
+    pTModule->upper_target_v_Flag[armsid] = 0;
+    // 6个电机：臂电机1, 臂电机2, 臂电机3, 托板电机1, 托板电机2, 托板电机3
+    pTModule->upper_target_velocity[armsid][0] = v0; 
+    pTModule->upper_target_velocity[armsid][1] = v1;
+    pTModule->upper_target_velocity[armsid][2] = v2;
+    pTModule->upper_target_velocity[armsid][3] = v3;
+    pTModule->upper_target_velocity[armsid][4] = v4;
+    pTModule->upper_target_velocity[armsid][5] = v5;
+
+    pTModule->upper_velocity_v0[armsid][0] = pTModule->motors[armsid][0].velocity_value;
+    pTModule->upper_velocity_v0[armsid][1] = pTModule->motors[armsid][1].velocity_value;
+    pTModule->upper_velocity_v0[armsid][2] = pTModule->motors[armsid][2].velocity_value;
+    pTModule->upper_velocity_v0[armsid][3] = pTModule->motors[armsid][3].velocity_value;
+    pTModule->upper_velocity_v0[armsid][4] = pTModule->motors[armsid][4].velocity_value;
+    pTModule->upper_velocity_v0[armsid][5] = pTModule->motors[armsid][5].velocity_value;
+    
+    // 200hz 调用周期，加减速1s
+    for (int i = 0; i < ARM_MOTOR_COUNT; i++)
+    {
+        if(pTModule->upper_target_velocity[armsid][i] > pTModule->upper_velocity_v0[armsid][i])
+            pTModule->upper_acc[armsid][i] = acc_mm;
+        else if(pTModule->upper_target_velocity[armsid][i] < pTModule->upper_velocity_v0[armsid][i])
+            pTModule->upper_acc[armsid][i] = -acc_mm;
+        else
+            pTModule->upper_acc[armsid][i] = 0;
+
+        pTModule->upper_last_v_cmd[armsid][i] = pTModule->upper_velocity_v0[armsid][i];
+    }
+    pTModule->upper_target_v_Flag[armsid] = 1;
+    return 0;
+}
+
+static void upperAngularVelSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *mSMsg)
+{
+    memset(pTModule->upper_target_v_Flag, 0, sizeof(uint8_t)*MASTER_ARMS_MAX_SIZE);
+    float *pVel = (float*)mSMsg->mData;
+    for (int i = 0; i < MASTER_ARMS_MAX_SIZE; i++)
+    {
+        if(mSMsg->mModuleFlag[i])
+        {
+            // 6个电机速度：臂电机1, 臂电机2, 臂电机3, 托板电机1, 托板电机2, 托板电机3
+            handleStartSlight(pTModule, i, pVel[0], pVel[1], pVel[2], pVel[3], pVel[4], pVel[5], 200);
+        }
+    }
+}
+
+static void upperRelaPosSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *mSMsg)
+{
+    for (int i = 0; i < MASTER_ARMS_MAX_SIZE; i++)
+    {
+        if(mSMsg->mModuleFlag[i])
+        {
+            float *pRpos = (float*)mSMsg->mData;
+            // 6个电机：臂电机1, 臂电机2, 臂电机3, 托板电机1, 托板电机2, 托板电机3
+            pTModule->upper_target_pos[i][0] = pTModule->motors[i][0].Ext_Pos_value + pRpos[0];
+            pTModule->upper_target_pos[i][1] = pTModule->motors[i][1].Ext_Pos_value + pRpos[1];
+            pTModule->upper_target_pos[i][2] = pTModule->motors[i][2].Ext_Pos_value + pRpos[2];
+            pTModule->upper_target_pos[i][3] = pTModule->motors[i][3].Ext_Pos_value + pRpos[3];
+            pTModule->upper_target_pos[i][4] = pTModule->motors[i][4].Ext_Pos_value + pRpos[4];
+            pTModule->upper_target_pos[i][5] = pTModule->motors[i][5].Ext_Pos_value + pRpos[5];
+            
+            // 位置控制的PD算法控制命令（速度），进行滤波平滑
+            for (int j = 0; j < ARM_MOTOR_COUNT; j++)
+            {
+                for (int k = 0; k < upper_pos_smooth_cnt; k++)
+                {
+                    pTModule->upper_pos_vel_smooth[i][j][k] = 0;
+                } 
+                pTModule->target_p_last_cmdvel[i][j] = 0;
+            }
+            pTModule->upper_target_p_Flag[i] = 1;
+            pTModule->upper_target_p_Kp_cnt[i] = 0;
+        }
+    }
+}
+
+static void upperAbsPosSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *mSMsg)
+{
+    for (int i = 0; i < MASTER_ARMS_MAX_SIZE; i++)
+    {
+        if(mSMsg->mModuleFlag[i])
+        {
+            float *pRpos = (float*)mSMsg->mData;
+            for (int j = 0; j < ARM_MOTOR_COUNT; j++)
+            {
+                pTModule->upper_target_pos[i][j] = pRpos[i*ARM_MOTOR_COUNT+j];
+                for (int k = 0; k < upper_pos_smooth_cnt; k++)
+                {
+                    pTModule->upper_pos_vel_smooth[i][j][k] = 0;
+                } 
+                pTModule->target_p_last_cmdvel[i][j] = 0;
+            }
+            pTModule->upper_target_p_Flag[i] = 1;
+            pTModule->upper_target_p_Kp_cnt[i] = 0;
+        }
+    }
+}
+
+static int confSlavesPdos(ARMS_MASTER_THREAD_INFO *pTModule)
+{
+    if(pTModule->armsSize < 1 || pTModule->armsSize > MASTER_ARMS_MAX_SIZE)
+    {
+        printf("confSlavesPdos:机械臂不存在\n\r");
+        return -1;
+    }
+
+    // 根据静态配置表遍历所有从站
+    for (int i = 0; i < TOTAL_ARM_SLAVES; i++)
+    {
+        const SLAVE_CONFIG_T *cfg = &g_slave_config[i];
+        
+        // 创建从站配置，使用绝对position（alias=0）
+        ec_slave_config_t *ec_sla_con = ecrt_master_slave_config(
+                                            pTModule->master, 
+                                            cfg->alias,
+                                            cfg->position, 
+                                            cfg->vendor_id,
+                                            cfg->product_code);
+
+        if(ec_sla_con == NULL)
+        {
+            printf("ecrt_master_slave_config failed: 臂%d 位置%d %s\n",
+                   cfg->arm_id, cfg->position, cfg->name);
+            return -1;
+        }
+        
+        // 查找该从站在链表中的对应节点，填充slave_conf
+        EK1100_slaves_inf *inf_t = NULL;
+        list_for_each_entry(inf_t, &pTModule->slaves_inf[cfg->arm_id].list, list)
+        {
+            if(inf_t->slave_in.position == cfg->position)
+            {
+                inf_t->slave_conf = ec_sla_con;
+                break;
+            }
+        }
+
+        // 根据从站类型配置不同的PDO
+        switch(cfg->type)
+        {
+            case SLAVE_TYPE_ARM_MOTOR:
+            case SLAVE_TYPE_PALLET_MOTOR:
+            {
+                // 臂电机和托板电机都使用SOMANET CSV模式PDO
+                int motor_idx = i % ARM_SLAVES_PER_ARM;
+                
+                if(pTModule->somanetn_mode == MODE_CSV)
+                {
+                    confSomanetCSVPdos(pTModule->domain1, &inf_t->slave_in, ec_sla_con, 
+                                     &pTModule->somanet_pdo[cfg->arm_id][motor_idx]);
+                }
+                printf("已配置臂%d 电机%d PDO (position=%d)\n", 
+                       cfg->arm_id, motor_idx, cfg->position);
+                break;
+            }
+            
+            case SLAVE_TYPE_RS485_GATEWAY:
+            {
+                // RS485网关：目前不配置电机PDO
+                // 如果该网关有特定PDO，需要在这里单独配置
+                printf("RS485网关 臂%d 位置%d 跳过电机PDO配置\n", 
+                       cfg->arm_id, cfg->position);
+                break;
+            }
+            
+            default:
+            {
+                printf("未知从站类型: 臂%d 位置%d\n", cfg->arm_id, cfg->position);
+                break;
+            }
+        }
+    }
+    
+    printf("###########################\n");
+    return 0;
+}
+
+static int activeMater(ARMS_MASTER_THREAD_INFO *pTModule)
+{
+    int iRet = -1;
+    if(pTModule->slaves_size < 1)
+      return iRet;
+    
+    // 设置DC时钟：所有电机从站
+    for (int i = 0; i < TOTAL_ARM_SLAVES; i++)
+    {
+        const SLAVE_CONFIG_T *cfg = &g_slave_config[i];
+        
+        // 只有电机从站需要DC
+        if(cfg->type == SLAVE_TYPE_RS485_GATEWAY)
+            continue;
+        
+        // 查找对应slave_conf
+        EK1100_slaves_inf *inf_t = NULL;
+        list_for_each_entry(inf_t, &pTModule->slaves_inf[cfg->arm_id].list, list)
+        {
+            if(inf_t->slave_in.position == cfg->position)
+            {
+                if(inf_t->slave_conf != NULL)
+                {
+                    ecrt_slave_config_dc(inf_t->slave_conf, 0x0700, 1000000, 500000, 0, 0);
+                    printf("臂%d 电机(position=%d) 已配置DC时钟\n", cfg->arm_id, cfg->position);
+                }
+                break;
+            }
+        }
+    }
+
+    // 选择第一个电机从站作为参考时钟（避免RS485网关作为参考时钟）
+    EK1100_slaves_inf *ref_slave = NULL;
+    list_for_each_entry(ref_slave, &pTModule->slaves_inf[0].list, list)
+    {
+        if(ref_slave->slave_conf != NULL && 
+           g_slave_config[ref_slave->slave_in.position % TOTAL_ARM_SLAVES].type != SLAVE_TYPE_RS485_GATEWAY)
+        {
+            int ret = ecrt_master_select_reference_clock(pTModule->master, ref_slave->slave_conf);
+            if (ret < 0) {
+                printf("Failed to select reference clock\n");
+                return iRet;
+            }
+            printf("参考时钟: 臂0 电机从站 position=%d\n", ref_slave->slave_in.position);
+            break;
+        }
+    }
+
+    printf("Activating master...\n");
+    if (ecrt_master_activate(pTModule->master)) {
+        return iRet;
+    }
+    else
+    {
+        printf("*Master activated*\n");
+    }
+    if (!(pTModule->domain1_pd = ecrt_domain_data(pTModule->domain1))) {
+        printf("ecrt_domain_data EXIT_FAILURE\n");
+    }
+    printf("starting 1000HZ pdo\n");
+    // 开启1000HZ循环
+    pTModule->masterActivated=true;
+
+    return 0;
+}
+
+static void  activeMaterKeydown(ARMS_MASTER_THREAD_INFO *pTModule)
+{
+    if(createMaster(pTModule->masterId,&pTModule->master,&pTModule->domain1) != 0)
+        return;
+
+    if(scanSlaves(pTModule) != 0)
+        return;
+
+    if(confSlavesPdos(pTModule) != 0)
+        return;
+
+    if(activeMater(pTModule) != 0)
+        return;
+}
+
 /*** 
  * @description: 
  * @Author: lyq
@@ -310,13 +848,76 @@ static void LoopRecLocalMsg(ARMS_MASTER_THREAD_INFO *pTModule)
             createMaster(pTModule->masterId,&pTModule->master,&pTModule->domain1);
             break;
         }
+        case CMD_MASTER_OP_KEYDOWN:
+        {
+          //只能使用速度模式，因为驱动器pos设置的是外部编码器
+            pTModule->somanetn_mode = MODE_CSV;
+            activeMaterKeydown(pTModule);
+            //打开拉力计串口
+          break;
+        }
         case CMD_DESTROY_MASTER:
         {
             if(pTModule->master != NULL)
             {
-                    destroyMaster(pTModule);
-                       
+                destroyMaster(pTModule);         
             }
+            break;
+        }
+        case CMD_IGH_SCAN_SLAVES:
+        {
+            scanSlaves(pTModule);
+            break;
+        }
+        case CMD_IGH_FSA_SHUTDOWN:
+        {
+            upperFSASomanets(pTModule,S_SHUTDOWN);
+            break;
+        }
+        case CMD_IGH_FSA_SWITH_ON:
+        {
+            upperFSASomanets(pTModule,S_SWITCH_ON);
+            break;
+        }
+        case CMD_IGH_FSA_ENOP:
+        {
+            upperFSASomanets(pTModule,S_ENABLE_OP);
+            break;
+        }
+        case CMD_IGH_FSA_HALT:
+        {
+            upperFSASomanets(pTModule,S_HAIT);
+            break;
+        }
+        case CMD_IGH_START_OP:
+        {
+            activeMater(pTModule);
+            break;
+        }   
+        case CMD_IGH_CLEAR_ERROR:
+        {
+            MsgLongMsg *mLMsg = (MsgLongMsg *)mLocalData;
+            clearErrorSomanets(pTModule,(SUPR_R_MSG *)mLMsg->mData);
+            break;
+        }
+        case CMD_HAND_VEL_MM:
+        {
+            MsgLongMsg *mLMsg = (MsgLongMsg *)mLocalData;
+            memset(pTModule->upper_target_p_Flag,0,sizeof(uint8_t)*MASTER_ARMS_MAX_SIZE);
+            upperAngularVelSomanets(pTModule,(SUPR_R_MSG *)mLMsg->mData);
+            
+            break;
+        }
+        case CMD_HAND_RELA_POS_MM:
+        {
+            MsgLongMsg *mLMsg = (MsgLongMsg *)mLocalData;
+            upperRelaPosSomanets(pTModule,(SUPR_R_MSG *)mLMsg->mData);
+            break;
+        }
+        case CMD_HAND_ABS_POS_M:
+        {
+            MsgLongMsg *mLMsg = (MsgLongMsg *)mLocalData;
+            upperAbsPosSomanets(pTModule,(SUPR_R_MSG *)mLMsg->mData);
             break;
         }
         default:
@@ -770,68 +1371,52 @@ void* master_arms_threadEntry(void* pModule)
 ******************************************************************************/
 static void reflash_tpdo_Ebus(ARMS_MASTER_THREAD_INFO *pTModule)
 {
-    //读取交换somanet的数据
+    // 读取交换somanet的数据
     for (int i = 0; i < pTModule->armsSize; i++)
     {
-        //4个伺服电机、EK1100 Ek1110 ...
-        if(pTModule->slaves_inf[i].childSlaveSize>4)
+        if(pTModule->slaves_inf[i].childSlaveSize != ARM_SLAVES_PER_ARM)
+            continue;
+
+        for (int j = 0; j < ARM_SLAVES_PER_ARM; j++)
         {
-            for (int j = 0; j < 4; j++)
-            {
-                //CSV、CSP模式下都需要刷新
-                pTModule->motors[i][j].status_word    = EC_READ_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].status_word);
-                pTModule->motors[i][j].velocity_value = EC_READ_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].velocity_value);
-                pTModule->motors[i][j].Ext_Pos_value = EC_READ_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].Ext_Pos_value);
-                pTModule->motors[i][j].Int_Pos_value = EC_READ_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].Int_Pos_value);
+            // 跳过RS485网关
+            if(g_slave_config[i*ARM_SLAVES_PER_ARM+j].type == SLAVE_TYPE_RS485_GATEWAY)
+                continue;
                 
-                //CVS模式下，算法要用到力矩偏置
-                pTModule->motors[i][j].torque_act_value = EC_READ_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].torque_act_value);
-                pTModule->motors[i][j].torque_demand = EC_READ_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].torque_demand);
-            }
-            //伺服里的PDO数据参数转换成使用单位
-            // somanets_i_to_f(pTModule,i);            
-            //读取EC-3045传感器数据,绝压值
-            //pTModule->EC_3045_abs_stress[i] = EC_READ_U16(pTModule->domain1_pd + pTModule->EC_3045[i][6]);
-            //读取EC-3045传感器数据,限位开关
-            //pTModule->EC_3045_switch[i] = EC_READ_U16(pTModule->domain1_pd + pTModule->EC_3045[i][5]);
+            // CSV、CSP模式下都需要刷新
+            pTModule->motors[i][j].status_word    = EC_READ_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].status_word);
+            pTModule->motors[i][j].velocity_value = EC_READ_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].velocity_value);
+            pTModule->motors[i][j].Ext_Pos_value = EC_READ_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].Ext_Pos_value);
+            pTModule->motors[i][j].Int_Pos_value = EC_READ_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].Int_Pos_value);
+            
+            // CVS模式下，算法要用到力矩偏置
+            pTModule->motors[i][j].torque_act_value = EC_READ_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].torque_act_value);
+            pTModule->motors[i][j].torque_demand = EC_READ_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].torque_demand);
         }
     }
 }
 
 static void reflash_rpdo_Ebus(ARMS_MASTER_THREAD_INFO *pTModule)
 {
-    //写入交换somanet的数据，1ms 刷新写入一次
+    // 写入交换somanet的数据，1ms刷新写入一次
     for (int i = 0; i < pTModule->armsSize; i++)
     {
-        //4个伺服电机、EK1100 Ek1110 ...
-        if(pTModule->slaves_inf[i].childSlaveSize>4)
-        {             
-            //CVS模式下，算法要用到力矩偏置
-            if(pTModule->somanetn_mode == MODE_CSV)
-            {
-                //目标速度存储
-                // pTModule->cmd_velocity[i][0] = ((float)pTModule->motors[i][1].target_velocity)*X_RPM_TO_V_MM*pTModule->AXIS_DIR[i][1];
-                // pTModule->cmd_velocity[i][1] = ((float)pTModule->motors[i][2].target_velocity)*X_RPM_TO_V_MM*pTModule->AXIS_DIR[i][2];
-                // pTModule->cmd_velocity[i][2] = ((float)pTModule->motors[i][0].target_velocity)*Y_RPM_TO_V_MM*pTModule->AXIS_DIR[i][0];
-                // pTModule->cmd_velocity[i][3] = ((float)pTModule->motors[i][3].target_velocity)*Z_RPM_TO_V_MM*pTModule->AXIS_DIR[i][3];
-                for (int j = 0; j < 4; j++)
-                {
-                    EC_WRITE_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].ctrl_word, pTModule->motors[i][j].ctrl_word);
-                    EC_WRITE_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].operation_mode, pTModule->motors[i][j].operation_mode);
-                    EC_WRITE_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].target_velocity, pTModule->motors[i][j].target_velocity);
-                    EC_WRITE_S16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].torque_offset, pTModule->motors[i][j].torque_offset);
-                }
-            }
-            //EC-3045输出
-            //将从站输出的值转换成PDO类型的
-            // prop_to_ec3045(pTModule,i); 
-        //     EC_WRITE_U16(pTModule->domain1_pd + pTModule->EC_3045[i][0], pTModule->EC_3045_vari[i][0]);
+        if(pTModule->slaves_inf[i].childSlaveSize != ARM_SLAVES_PER_ARM)
+            continue;
 
-        //     //模拟量输出
-        //     EC_WRITE_U16(pTModule->domain1_pd + pTModule->EC_3045[i][1], pTModule->EC_3045_vari[i][1]);
-        //     EC_WRITE_U16(pTModule->domain1_pd + pTModule->EC_3045[i][2], pTModule->EC_3045_vari[i][2]);
-        //     EC_WRITE_U16(pTModule->domain1_pd + pTModule->EC_3045[i][3], pTModule->EC_3045_vari[i][3]);
-        //     EC_WRITE_U16(pTModule->domain1_pd + pTModule->EC_3045[i][4], pTModule->EC_3045_vari[i][4]);
+        if(pTModule->somanetn_mode == MODE_CSV)
+        {
+            for (int j = 0; j < ARM_SLAVES_PER_ARM; j++)
+            {
+                // 跳过RS485网关
+                if(g_slave_config[i*ARM_SLAVES_PER_ARM+j].type == SLAVE_TYPE_RS485_GATEWAY)
+                    continue;
+                    
+                EC_WRITE_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].ctrl_word, pTModule->motors[i][j].ctrl_word);
+                EC_WRITE_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].operation_mode, pTModule->motors[i][j].operation_mode);
+                EC_WRITE_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].target_velocity, pTModule->motors[i][j].target_velocity);
+                EC_WRITE_S16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].torque_offset, pTModule->motors[i][j].torque_offset);
+            }
         }
     }
 }
