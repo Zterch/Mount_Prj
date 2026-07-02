@@ -1608,7 +1608,6 @@ static void LoopRecLocalMsg(ARMS_MASTER_THREAD_INFO *pTModule)
             memset(pTModule->upper_target_p_Flag,0,sizeof(uint8_t)*MASTER_ARMS_MAX_SIZE);
             upperAngularVelSomanets(pTModule,(SUPR_R_MSG *)mLMsg->mData);
             
-        
             break;
         }
         case CMD_HAND_RELA_POS_MM:
