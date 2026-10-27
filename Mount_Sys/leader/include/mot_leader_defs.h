@@ -24,18 +24,25 @@
 #define NSEC_PER_SEC		1000000000
 
 // 新架构：每臂从站数量定义
-#define ARM_SLAVES_PER_ARM    7   // 每臂7个从站：3臂电机 + 1 RS485网关 + 3托板电机
-#define ARM_MOTOR_COUNT       6   // 每臂实际电机数量（6个电机从站，不含RS485网关）
-#define TOTAL_ARM_SLAVES      (MASTER_ARMS_MAX_SIZE * ARM_SLAVES_PER_ARM)  // 总共14个从站
+/*
+ *每臂10个从站：EK1100 + EL2809 + EL6022 + EK1110 + 
+ *下曲臂电缸电机 + 上曲臂电缸电机 + 摆动电缸电机 + 3托板电机
+ */
+#define ARM_SLAVES_PER_ARM    10   
+#define ARM_MOTOR_COUNT       6   // 每臂实际电机数量（6个电机从站，不含EK、EL）
+#define TOTAL_ARM_SLAVES      (MASTER_ARMS_MAX_SIZE * ARM_SLAVES_PER_ARM)  // 总共20个从站
 
 // 从站在臂内的索引定义
-#define ARM_MOTOR_1_IDX       0   // 臂电机1
-#define ARM_MOTOR_2_IDX       1   // 臂电机2
-#define ARM_MOTOR_3_IDX       2   // 臂电机3
-#define RS485_GATEWAY_IDX     3   // RS485转EtherCAT模块（无电机PDO）
-#define PALLET_MOTOR_1_IDX    4   // 托板电机1
-#define PALLET_MOTOR_2_IDX    5   // 托板电机2
-#define PALLET_MOTOR_3_IDX    6   // 托板电机3
+// #define EK1100       0   // 臂电机1
+// #define EL2809       1   // 臂电机2
+// #define EL6022       2   // 臂电机3
+// #define EK1110       3   // RS485转EtherCAT模块（无电机PDO）
+// #define DOWN_ARM_MOTOR  4
+// #define UP_ARM_MOTOR    5
+// #define SWING_MOTOR
+// #define PALLET_MOTOR_1_IDX    7   // 托板电机1
+// #define PALLET_MOTOR_2_IDX    8   // 托板电机2
+// #define PALLET_MOTOR_3_IDX    9   // 托板电机3
 
 typedef enum
 {
@@ -79,16 +86,6 @@ typedef enum {
     SLAVE_TYPE_UNKNOWN,           // 未知类型
 } SLAVE_TYPE_E;
 
-// 静态从站配置表项（替代EK1100动态检测）
-typedef struct {
-    uint16_t      alias;          // EtherCAT alias（通常0）
-    uint16_t      position;       // 总线绝对位置（0,1,2...13）
-    uint32_t      vendor_id;      // 厂商ID
-    uint32_t      product_code;   // 产品码
-    SLAVE_TYPE_E  type;           // 从站类型
-    uint8_t       arm_id;         // 所属臂ID（0=臂1，1=臂2）
-    const char    *name;          // 设备名称标识
-} SLAVE_CONFIG_T;
 
 typedef enum
 {
@@ -136,20 +133,21 @@ typedef struct{
     {0x6078, 0x00, 16}, /* Current actual value  */
     {0x200b, 0x05, 16}, /* InterTorqueRef        */
     #endif
-    unsigned int ctrl_word;
-    unsigned int operation_mode;
-    unsigned int Target_position;
-    unsigned int target_velocity;
-    unsigned int torque_offset;
+    int ctrl_word;        // 0x6040 控制字
+    int target_position;  // 0x607A 目标位置
+    int target_velocity;  // 0x60FF 目标速度
+    int target_torque;    // 0x6071 目标力矩
 
-    unsigned int status_word;
-    unsigned int mode_display;
-    unsigned int Position_value;
-    unsigned int Ext_Pos_value;
-    unsigned int velocity_value;
-    unsigned int Int_Pos_value;
-    unsigned int torque_act_value;
-    unsigned int torque_demand;
+    /* TxPDO —— 电机反馈给主站 */
+    int status_word;      // 0x6041 状态字
+    int Position_value;   // 0x6064 实际位置
+    int velocity_value;   // 0x606c 实际速度
+    int torque_act_value; // 0x6077 实际力矩
+    int following_error;  // 0x60F4 跟随误差
+    int error_code;       // 0x603F 错误码
+    ec_sdo_request_t *mode_display_request;
+    int mode_display;
+    ec_request_state_t mode_request_state;
 }motec_pdos;
 
 #pragma pack(1)
@@ -157,20 +155,16 @@ typedef struct{
 typedef struct{
     //读取pdo伺服电机的数据
     uint16_t ctrl_word;
-    uint8_t  operation_mode;
-    int32_t  Target_position;
+    int32_t  target_position;
     int32_t  target_velocity;
-    int16_t  torque_offset;
+    int16_t  target_torque;
 
     uint16_t status_word;
-    uint8_t  mode_display;
-    int32_t  Ext_Pos_value;
+    int32_t  Position_value;
     int32_t  velocity_value;
-    int32_t  Int_Pos_value;
     int16_t  torque_act_value;
-    int16_t  torque_demand;
-    //uint16_t  setting_time_now;
-    //uint16_t  damping_ratio_now;
+    int32_t  following_error;
+    uint16_t error_code;
 }motec_motors;
 
 
@@ -442,11 +436,26 @@ typedef struct
   //机械臂的个数，也就是EK1100的个数
   int armsSize;
   
+    uint8_t arm_motor_count[MASTER_ARMS_MAX_SIZE]; // 记录每个臂实际连接的电机数量
   //交换的pdo数据,一个arm下有7个从站
   motec_pdos   somanet_pdo[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
 
+  //EL2809：16路数字量输出 偏移
+  int EL2809[MASTER_ARMS_MAX_SIZE][16];
+  uint8_t EL2809_bit[MASTER_ARMS_MAX_SIZE][16];
+  uint8_t EL2809_output[MASTER_ARMS_MAX_SIZE][16];
  
-
+  //EL6022 PDO 偏移和两端口 Modbus RTU 轮询状态
+  int EL6022[MASTER_ARMS_MAX_SIZE][2][8];
+  uint8_t el6022_tx[MASTER_ARMS_MAX_SIZE][2][22];
+  uint8_t el6022_tx_len[MASTER_ARMS_MAX_SIZE][2];
+  uint8_t el6022_tx_pos[MASTER_ARMS_MAX_SIZE][2];
+  uint8_t el6022_rx[MASTER_ARMS_MAX_SIZE][2][22];
+  uint8_t el6022_rx_count[MASTER_ARMS_MAX_SIZE][2];
+  uint8_t el6022_sensor_index[MASTER_ARMS_MAX_SIZE][2];
+  uint32_t el6022_next_poll_ms[MASTER_ARMS_MAX_SIZE][2];
+  int32_t sensor_value[MASTER_ARMS_MAX_SIZE][7];
+  uint8_t sensor_valid[MASTER_ARMS_MAX_SIZE][7];
 
   motec_motors motors[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
 /****************************以下是igh主站使用 end*****************************/

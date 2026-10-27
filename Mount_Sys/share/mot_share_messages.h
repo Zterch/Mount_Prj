@@ -169,6 +169,47 @@ typedef struct
 
 #define CMD_DESTROY_MASTER       (CMD_BASE + 19)
 #define CMD_MASTER_OP_KEYDOWN    (CMD_BASE + 20)
+#define CMD_EL2809_OUTPUT        (CMD_BASE + 21)
+
+typedef struct {
+  uint8_t arm_index;
+  uint8_t channel;
+  uint8_t enabled;
+  uint8_t reserved;
+} EL2809_OUTPUT_CMD;
+
+// 主站遥测回传：supr -> 上位机
+#define MSG_ID_MASTER_TELEMETRY  (MSG_ID_BASE_FEATURE + 50)
+#define MASTER_TELEMETRY_MAGIC  0x4D544C59u
+#define MASTER_TELEMETRY_VERSION 1
+#define MASTER_TELEMETRY_MAX_ARMS 2
+#define MASTER_TELEMETRY_MAX_MOTORS 6
+#define MASTER_TELEMETRY_SERIAL_BYTES 22
+#define MASTER_TELEMETRY_SENSOR_COUNT 7
+
+typedef struct {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t size;
+  uint8_t  arm_count;
+  uint8_t  motor_count[MASTER_TELEMETRY_MAX_ARMS];
+  uint8_t  reserved[1];
+  uint32_t master_al_state;
+  uint16_t domain_wc;
+  uint16_t reserved2;
+  struct {
+    uint16_t status_word;
+    int32_t  position;
+    int32_t  velocity;
+    int16_t  torque;
+    uint16_t error_code;
+  } motor[MASTER_TELEMETRY_MAX_ARMS][MASTER_TELEMETRY_MAX_MOTORS];
+  uint8_t el2809[MASTER_TELEMETRY_MAX_ARMS][16];
+  uint16_t el6022_status[MASTER_TELEMETRY_MAX_ARMS][2];
+  uint8_t el6022_data[MASTER_TELEMETRY_MAX_ARMS][2][MASTER_TELEMETRY_SERIAL_BYTES];
+  int32_t sensor_value[MASTER_TELEMETRY_MAX_ARMS][MASTER_TELEMETRY_SENSOR_COUNT];
+  uint8_t sensor_valid[MASTER_TELEMETRY_MAX_ARMS][MASTER_TELEMETRY_SENSOR_COUNT];
+} MASTER_TELEMETRY;
 
 #pragma pack()
 

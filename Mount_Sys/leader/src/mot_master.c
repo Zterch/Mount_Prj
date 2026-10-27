@@ -12,6 +12,9 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <stddef.h>
+#include <math.h>
+#include <inttypes.h>
 #include <unistd.h>
 
 #include "mot_master.h"
@@ -20,6 +23,27 @@
 #include "mot_ctl.h"
 #include "mot_commu_ipc.h"
 #include "mot_share_daemon.h"
+
+
+
+
+
+/* Match sysEthPrj_Gene: 20-bit encoder, 101:1, 10 deg/s speed and 30 deg/s^2 ramp. */
+#define CSV_COUNTS_PER_DEG (1048576.0 * 101.0 / 360.0)
+#define CSV_MAX_DEG_PER_SEC 10.0f
+#define CSV_ACC_DEG_PER_SEC2 30.0f
+
+static void resetVelocityRamp(ARMS_MASTER_THREAD_INFO *module, int arm)
+{
+    module->upper_target_v_Flag[arm] = 0;
+    for (int motor = 0; motor < ARM_MOTOR_COUNT; ++motor) {
+        module->upper_target_velocity[arm][motor] = 0;
+        module->upper_velocity_v0[arm][motor] = 0;
+        module->upper_last_v_cmd[arm][motor] = 0;
+        module->upper_acc[arm][motor] = 0;
+        module->motors[arm][motor].target_velocity = 0;
+    }
+}
 
 static int32_t initMaster(ARMS_MASTER_THREAD_INFO *pTModule);
 
@@ -41,6 +65,9 @@ static void LoopRecLocalMsg(ARMS_MASTER_THREAD_INFO *pTModule);
 static void  cyc_vel_upper_cmd(ARMS_MASTER_THREAD_INFO *pTModule);
 
 static void  cyc_pos_upper_cmd(ARMS_MASTER_THREAD_INFO *pTModule);
+static void sendTelemetry(ARMS_MASTER_THREAD_INFO *pTModule);
+static void pollEL6022(ARMS_MASTER_THREAD_INFO *pTModule);
+static uint16_t modbusCrc16(const uint8_t *data, size_t length);
 
 /*****************************ethercat总线相关函数********************************/
 #define     TIMESPEC2NS(T)       ((uint64_t) (T).tv_sec * NSEC_PER_SEC + (T).tv_nsec)
@@ -63,40 +90,15 @@ static void  upperAbsPosSomanets(ARMS_MASTER_THREAD_INFO *pTModule,SUPR_R_MSG *m
 static void    activeMaterKeydown(ARMS_MASTER_THREAD_INFO *pTModule);
 static int  confSlavesPdos(ARMS_MASTER_THREAD_INFO *pTModule);
 static int  activeMater(ARMS_MASTER_THREAD_INFO *pTModule);
-static void  confSomanetCSVPdos(ec_domain_t *domain1,ec_slave_info_t *inf,ec_slave_config_t *sc,motec_pdos * ppdos);
-static void confRS485GatewayPdos(ec_domain_t *domain1, ec_slave_info_t *inf, ec_slave_config_t *sc);
-
-/******************************************************************************
- * 新架构静态从站配置表（替代EK1100动态检测）
- * 连接顺序：PC -> 臂1(电机1->电机2->电机3->RS485网关->托板电机1->托板电机2->托板电机3)
- *           -> 臂2(电机1->电机2->电机3->RS485网关->托板电机1->托板电机2->托板电机3)
- * 
- * 注意：请根据实际设备的 vendor_id 和 product_code 修改以下值！
- *       可用命令查看：sudo ethercat slaves -v
- ******************************************************************************/
-static const SLAVE_CONFIG_T g_slave_config[TOTAL_ARM_SLAVES] = {
-    /* ========== 机械臂1 (arm_id=0) ========== */
-    {0,  0, 0x000007CF, 0x50101611, SLAVE_TYPE_ARM_MOTOR,   0, "MOTEC_DC_SERVO"},
-    {0,  1, 0x000007CF, 0x50101611, SLAVE_TYPE_ARM_MOTOR,   0, "MOTEC_DC_SERVO"},
-    {0,  2, 0x000007CF, 0x50101611, SLAVE_TYPE_ARM_MOTOR,   0, "MOTEC_DC_SERVO"},
-    {0,  3, 0x00000B95, 0x00001400, SLAVE_TYPE_RS485_GATEWAY, 0, "AMSAMOTION_EC_MB"},
-    {0,  4, 0x000007CF, 0x50101611, SLAVE_TYPE_PALLET_MOTOR, 0, "MOTEC_DC_SERVO"},
-    {0,  5, 0x000007CF, 0x50101611, SLAVE_TYPE_PALLET_MOTOR, 0, "MOTEC_DC_SERVO"},
-    {0,  6, 0x000007CF, 0x50101611, SLAVE_TYPE_PALLET_MOTOR, 0, "MOTEC_DC_SERVO"},
-    
-    /* ========== 机械臂2 (arm_id=1) ========== */
-    {0,  7, 0x000007CF, 0x50101611, SLAVE_TYPE_ARM_MOTOR,   1, "MOTEC_DC_SERVO"},
-    {0,  8, 0x000007CF, 0x50101611, SLAVE_TYPE_ARM_MOTOR,   1, "MOTEC_DC_SERVO"},
-    {0,  9, 0x000007CF, 0x50101611, SLAVE_TYPE_ARM_MOTOR,   1, "MOTEC_DC_SERVO"},
-    {0, 10, 0x00000B95, 0x00001400, SLAVE_TYPE_RS485_GATEWAY, 1, "AMSAMOTION_EC_MB"},
-    {0, 11, 0x000007CF, 0x50101611, SLAVE_TYPE_PALLET_MOTOR, 1, "MOTEC_DC_SERVO"},
-    {0, 12, 0x000007CF, 0x50101611, SLAVE_TYPE_PALLET_MOTOR, 1, "MOTEC_DC_SERVO"},
-    {0, 13, 0x000007CF, 0x50101611, SLAVE_TYPE_PALLET_MOTOR, 1, "MOTEC_DC_SERVO"},
-};
+static int confSomanetCSVPdos(ec_domain_t *domain1,ec_slave_info_t *inf,ec_slave_config_t *sc,motec_pdos *ppdos);
+static void confEL2809Pdos(ARMS_MASTER_THREAD_INFO *pTModule,ec_slave_info_t *inf,ec_slave_config_t *sc,int EK1100Index);
+static void confEL6022Pdos(ARMS_MASTER_THREAD_INFO *pTModule,ec_slave_info_t *inf,ec_slave_config_t *sc,int EK1100Index);
 
 
 static void  destroyMaster(ARMS_MASTER_THREAD_INFO *pTModule)
 {
+    for (int arm = 0; arm < pTModule->armsSize; ++arm)
+        resetVelocityRamp(pTModule, arm);
     //伺服运行过程中，急停电机
     if (pTModule->masterActivated)
     {
@@ -189,6 +191,10 @@ static int32_t initMaster(ARMS_MASTER_THREAD_INFO *pTModule) {
     pTModule->slaves_inf[i].childSlaveSize = 0;
     INIT_LIST_HEAD(&pTModule->slaves_inf[i].list);
   }
+
+  memset(pTModule->arm_motor_count, 0, sizeof(pTModule->arm_motor_count));
+    memset(pTModule->EL2809, 0xff, sizeof(pTModule->EL2809));
+    memset(pTModule->EL6022, 0xff, sizeof(pTModule->EL6022));
 
   //测试创建插值表数据库。
   #if 0
@@ -325,108 +331,109 @@ static int  handle_module_exit(ARMS_MASTER_THREAD_INFO *pTModule)
 
 static int  scanSlaves(ARMS_MASTER_THREAD_INFO *pTModule)
 {
-  int iRet = -1;
-  if(!pTModule->master)
-    return iRet;
+    int iRet = -1;
+    if(!pTModule->master)
+        return iRet;
 
-  //创建slaves_inf头
-  for (int i = 0; i < MASTER_ARMS_MAX_SIZE; i++)
-  {    
-    destroy_slaves_inf(&pTModule->slaves_inf[i]);
-    INIT_LIST_HEAD(&pTModule->slaves_inf[i].list);
-  }
-
-
-  //使用命令行，查询从站个数
-  FILE *fp = NULL;
-  char comm[64]="";
-  sprintf(comm,"sudo ethercat -m %d slave | wc -l",pTModule->masterId);
-  fp = popen(comm,"r");
-
-  int actual_slave_size = 0;
-  if (fp != NULL)
-  {   
-      char buffer[100];
-      while (fgets(buffer, 100, fp) != NULL)
-          actual_slave_size = atoi(buffer);
-
-      fclose(fp);          
-  }
-  if(actual_slave_size != TOTAL_ARM_SLAVES) {
-    printf("警告: 实际从站数(%d)与配置表(%d)不匹配！请检查接线或配置。\n", 
-               actual_slave_size, TOTAL_ARM_SLAVES);
-  }
-
-    for (int i = 0; i < TOTAL_ARM_SLAVES; i++) {
-    const SLAVE_CONFIG_T *cfg = &g_slave_config[i];
-    ec_slave_info_t slave_in;
-    
-    // 从主站获取该position的实际从站信息
-    if(ecrt_master_get_slave(pTModule->master, cfg->position, &slave_in) < 0)
-    {
-        printf("获取从站 %d 信息失败\n", cfg->position);
-        break;
+    //创建slaves_inf头
+    for (int i = 0; i < MASTER_ARMS_MAX_SIZE; i++)
+    {    
+        destroy_slaves_inf(&pTModule->slaves_inf[i]);
+        INIT_LIST_HEAD(&pTModule->slaves_inf[i].list);
     }
 
-    // 分配从站信息节点
-    EK1100_slaves_inf *childSlave = (EK1100_slaves_inf*)malloc(sizeof(EK1100_slaves_inf));
-    memset((char*)childSlave, 0, sizeof(EK1100_slaves_inf));
-    memcpy(&childSlave->slave_in, &slave_in, sizeof(ec_slave_info_t));
-    
-    childSlave->masteri = pTModule->masterId;
-    
-    // 添加到对应臂的链表
-    list_add_tail(&childSlave->list, &pTModule->slaves_inf[cfg->arm_id].list);
-    pTModule->slaves_inf[cfg->arm_id].childSlaveSize++;
+    int EK1100size = 0;
 
-    printf("&&&&&&& [%s] 臂%d 位置%d: %s (vendor:0x%08X product:0x%08X)\n", 
-            cfg->type == SLAVE_TYPE_RS485_GATEWAY ? "网关" : 
-            cfg->type == SLAVE_TYPE_PALLET_MOTOR ? "托板" : "臂电机",
-            cfg->arm_id, cfg->position, 
-            childSlave->slave_in.name,
-            childSlave->slave_in.vendor_id,
-            childSlave->slave_in.product_code);
-  }
-  //设置从站个数、arms的个数
-  pTModule->slaves_size = TOTAL_ARM_SLAVES;
-  pTModule->armsSize = MASTER_ARMS_MAX_SIZE;
-  printf("扫描完成: 总共%d个从站, %d套臂, 每臂%d个从站\n", 
-           pTModule->slaves_size, pTModule->armsSize, ARM_SLAVES_PER_ARM);
-  return 0;
+    //使用命令行，查询从站个数
+    FILE *fp = NULL;
+    char comm[64]="";
+    sprintf(comm,"sudo ethercat -m %d slave | wc -l",pTModule->masterId);
+    fp = popen(comm,"r");
+
+    int actual_slave_size = 0;
+    if (fp != NULL)
+    {   
+        char buffer[100];
+        while (fgets(buffer, 100, fp) != NULL)
+            actual_slave_size = atoi(buffer);
+
+        fclose(fp);          
+    }
+
+    if(actual_slave_size != TOTAL_ARM_SLAVES) {
+        printf("警告: 实际从站数(%d)与配置表(%d)不匹配！请检查接线或配置。\n", 
+                actual_slave_size, TOTAL_ARM_SLAVES);
+    }
+
+    for (int i = 0; i < actual_slave_size; i++) {
+     
+        ec_slave_info_t slave_in;
+
+        // 从主站获取该position的实际从站信息
+        if(ecrt_master_get_slave(pTModule->master, i, &slave_in) < 0)
+        {
+            printf("获取从站 %d 信息失败\n", i);
+            break;
+        }
+
+        // 分配从站信息节点
+        EK1100_slaves_inf *childSlave = (EK1100_slaves_inf*)malloc(sizeof(EK1100_slaves_inf));
+        memset((char*)childSlave, 0, sizeof(EK1100_slaves_inf));
+        memcpy(&childSlave->slave_in, &slave_in, sizeof(ec_slave_info_t));
+
+        if (strstr(slave_in.name, "EK1100") != NULL)
+        {
+            EK1100size++;
+        }else{
+
+        }
+
+        childSlave->masteri = pTModule->masterId;
+
+        // 添加到对应臂的链表
+        list_add_tail(&childSlave->list, &pTModule->slaves_inf[EK1100size-1].list);
+        pTModule->slaves_inf[EK1100size-1].childSlaveSize++;
+
+        printf("&&&&&&& %s %d %d \n", childSlave->slave_in.name,childSlave->slave_in.alias,childSlave->slave_in.position );
+    }
+    //设置从站个数、arms的个数
+    pTModule->slaves_size = actual_slave_size;
+    pTModule->armsSize = EK1100size;
+    printf("扫描完成: 总共%d个从站, %d套臂\n", 
+             pTModule->slaves_size, pTModule->armsSize);
+    return 0;
 }
 
 
-static void  confSomanetCSVPdos(ec_domain_t *domain1,ec_slave_info_t *inf,ec_slave_config_t *sc,motec_pdos * ppdos)
+static int confSomanetCSVPdos(ec_domain_t *domain1,ec_slave_info_t *inf,ec_slave_config_t *sc,motec_pdos *ppdos)
 {
     /*Config PDOs*/
-    uint8_t rpdo_entries_size = 5;
-    uint8_t tpdo_entries_size = 7;
+    uint8_t rpdo_entries_size = 4;
+    uint8_t tpdo_entries_size = 6;
     ec_pdo_entry_info_t rpdo_entries[] = {
         /*RxPdo 0x1600*/
-        {0x6040, 0x00, 16},
-        {0x6060, 0x00, 8},
-        {0x607A, 0x00, 32},
-        {0x60FF, 0x00, 32},
-        {0x60B2, 0x00, 16},
+        {0x6040, 0x00, 16}, /* C */
+        {0x607a, 0x00, 32}, /* T */
+        {0x60ff, 0x00, 32}, /* T */
+        {0x6071, 0x00, 16}, /* T */
     };
     ec_pdo_entry_info_t tpdo_entries[] = {
         /*TxPdo 0x1A00*/
-        {0x6041, 0x00, 16},
-        {0x6061, 0x00, 8},
-        {0x6064, 0x00, 32},
-        {0x606C, 0x00, 32},
-        {0x2111, 0x02, 32},
-        {0x6077, 0x00, 16},
-        {0x6074, 0x00, 16}
+        {0x6041, 0x00, 16}, /* S */
+        {0x6064, 0x00, 32}, /* P */
+        {0x606c, 0x00, 32}, /* V */
+        {0x6077, 0x00, 16}, /* T */
+        {0x60f4, 0x00, 32}, /* F */
+        {0x603f, 0x00, 16}, /* E */
     };
 
     ec_pdo_info_t ec_rpdos[] = {
         //RxPdo
-        {0x1600, rpdo_entries_size, rpdo_entries + 0 }, /*recive pdo maping*/
+        {0x1601, rpdo_entries_size, rpdo_entries + 0 }, /*recive pdo maping*/
     };
     ec_pdo_info_t ec_tpdos[] = {
         //TxPdo
-        {0x1A00, tpdo_entries_size, tpdo_entries + 0 } /*send pdo maping*/
+        {0x1A01, tpdo_entries_size, tpdo_entries + 0 } /*send pdo maping*/
     };
 
     /*
@@ -448,9 +455,9 @@ static void  confSomanetCSVPdos(ec_domain_t *domain1,ec_slave_info_t *inf,ec_sla
     
 
     //清除伺服错误
-    ecrt_slave_config_sdo16( sc, 0x6040, 0, 0x80 );
-    ecrt_slave_config_sdo16( sc, 0x2010, 0x0a, 0x07D0);
-    ecrt_slave_config_sdo16( sc, 0x2010, 0x0b, 0x07D0);
+    // ecrt_slave_config_sdo16( sc, 0x6040, 0, 0x80 );
+    // ecrt_slave_config_sdo16( sc, 0x2010, 0x0a, 0x07D0);
+    // ecrt_slave_config_sdo16( sc, 0x2010, 0x0b, 0x07D0);
     #if 0
     //配置RPDO
     /* Clear RxPdo */
@@ -494,11 +501,13 @@ static void  confSomanetCSVPdos(ec_domain_t *domain1,ec_slave_info_t *inf,ec_sla
     ecrt_slave_config_sdo16( sc, 0x1C13, 1, 0x1A00 ); /* list all TxPdo in 0x1C13:1-4 */
     ecrt_slave_config_sdo8(  sc, 0x1C13, 0, 1 ); /* set number of TxPDO */
    #endif
-    //ecrt_slave_config_sdo8( sc, 0x6060, 0, 9);
+    if (ecrt_slave_config_sdo8(sc, 0x6060, 0, 9) < 0)
+        return -1;
 
     if (ecrt_slave_config_pdos(sc, EC_END, servo_syncs))
     {
-        printf("Failed to configure servo PDOs!\n");
+        fprintf(stderr, "Failed to configure servo PDOs: slave=%u\n", inf->position);
+        return -1;
     }
     else
     {
@@ -506,54 +515,69 @@ static void  confSomanetCSVPdos(ec_domain_t *domain1,ec_slave_info_t *inf,ec_sla
     }
 
     ppdos->ctrl_word = ecrt_slave_config_reg_pdo_entry(sc,0x6040, 0, domain1, NULL);
-    ppdos->operation_mode = ecrt_slave_config_reg_pdo_entry(sc,0x6060, 0, domain1, NULL);
-    ppdos->Target_position = ecrt_slave_config_reg_pdo_entry(sc,0x607A, 0, domain1, NULL);
+    // ppdos->operation_mode = ecrt_slave_config_reg_pdo_entry(sc,0x6060, 0, domain1, NULL);
+    ppdos->target_position = ecrt_slave_config_reg_pdo_entry(sc,0x607A, 0, domain1, NULL);
     ppdos->target_velocity = ecrt_slave_config_reg_pdo_entry(sc,0x60FF, 0, domain1, NULL);
-    ppdos->torque_offset  =  ecrt_slave_config_reg_pdo_entry(sc,0x60B2, 0, domain1, NULL);
+    ppdos->target_torque  =  ecrt_slave_config_reg_pdo_entry(sc,0x6071, 0, domain1, NULL);
 
     ppdos->status_word = ecrt_slave_config_reg_pdo_entry(sc,0x6041, 0, domain1, NULL);
-    ppdos->mode_display = ecrt_slave_config_reg_pdo_entry(sc,0x6061, 0, domain1, NULL);
-    ppdos->Ext_Pos_value = ecrt_slave_config_reg_pdo_entry(sc,0x6064, 0, domain1, NULL);
+    ppdos->Position_value = ecrt_slave_config_reg_pdo_entry(sc,0x6064, 0, domain1, NULL);
     ppdos->velocity_value = ecrt_slave_config_reg_pdo_entry(sc,0x606c, 0, domain1, NULL);
-    ppdos->Int_Pos_value = ecrt_slave_config_reg_pdo_entry(sc,0x2111, 2, domain1, NULL);
     ppdos->torque_act_value = ecrt_slave_config_reg_pdo_entry(sc,0x6077, 0, domain1, NULL);
-    ppdos->torque_demand = ecrt_slave_config_reg_pdo_entry(sc,0x6074, 0, domain1, NULL);
+    ppdos->following_error = ecrt_slave_config_reg_pdo_entry(sc,0x60f4, 0, domain1, NULL);
+    ppdos->error_code = ecrt_slave_config_reg_pdo_entry(sc,0x603f, 0, domain1, NULL);
+    // ppdos->torque_demand = ecrt_slave_config_reg_pdo_entry(sc,0x6074, 0, domain1, NULL);
     
     //ppdos->setting_time_now   =  ecrt_slave_config_reg_pdo_entry(sc,0x2010, 0x0a, domain1, NULL);
     //ppdos->damping_ratio_now   =  ecrt_slave_config_reg_pdo_entry(sc,0x2010, 0x0b, domain1, NULL);
+    const int offsets[] = {ppdos->ctrl_word, ppdos->target_position,
+        ppdos->target_velocity, ppdos->target_torque, ppdos->status_word,
+        ppdos->Position_value, ppdos->velocity_value, ppdos->torque_act_value,
+        ppdos->following_error, ppdos->error_code};
+    for (size_t entry = 0; entry < sizeof(offsets) / sizeof(offsets[0]); ++entry) {
+        if (offsets[entry] < 0) {
+            fprintf(stderr, "Servo slave=%u PDO registration entry=%zu failed: %d\n",
+                    inf->position, entry, offsets[entry]);
+            return -1;
+        }
+    }
+    printf("Servo slave=%u offsets cw=%d tp=%d tv=%d tq=%d sw=%d pos=%d vel=%d torque=%d following=%d error=%d\n",
+           inf->position, offsets[0], offsets[1], offsets[2], offsets[3], offsets[4],
+           offsets[5], offsets[6], offsets[7], offsets[8], offsets[9]);
+    /* Read mode through the mailbox; keep the ESI's default TxPDO layout. */
+    ppdos->mode_display = -1;
+    ppdos->mode_request_state = EC_REQUEST_UNUSED;
+    ppdos->mode_display_request = ecrt_slave_config_create_sdo_request(sc, 0x6061, 0, 1);
+    if (ppdos->mode_display_request)
+        ecrt_sdo_request_timeout(ppdos->mode_display_request, 500);
+    else
+        fprintf(stderr, "Servo slave=%u: 0x6061 diagnostic request unavailable\n", inf->position);
+    return 0;
 }
 
-static void confRS485GatewayPdos(ec_domain_t *domain1, ec_slave_info_t *inf, ec_slave_config_t *sc)
-{
-    // AMSAMOTION_EC_MB 网关不通过标准电机PDO控制
-    // 如果后续需要通过PDO控制网关，在此处添加配置
-    printf("配置RS485网关: %s (position=%d)\n", inf->name, inf->position);
-    
-    // 示例：如果网关有简单的输入输出PDO，可以在这里配置
-    // 目前仅输出日志，不注册PDO条目
-}
+
 
 static void  upperFSASomanets(ARMS_MASTER_THREAD_INFO *pTModule,S_ETHR_STATE fsastate)
 {
     for (int i = 0; i < pTModule->armsSize; i++)
     {
+        resetVelocityRamp(pTModule, i);
         pTModule->arm_fsa[i] = fsastate;
     }
 }
 
 static void clearErrorSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *mSMsg)
 {
-    for (int i = 0; i < MASTER_ARMS_MAX_SIZE; i++)
+    for (int i = 0; i < pTModule->armsSize; i++)
     {
-        if(mSMsg->mModuleFlag[i])
+        if (mSMsg->mModuleFlag[i])
         {
-            for (int j = 0; j < ARM_SLAVES_PER_ARM; j++)
+            resetVelocityRamp(pTModule, i);
+            pTModule->arm_fsa[i] = S_CLEAR_ERROR;
+            for (int j = 0; j < pTModule->arm_motor_count[i]; j++)
             {
-                // 跳过RS485网关
-                if(g_slave_config[i*ARM_SLAVES_PER_ARM+j].type == SLAVE_TYPE_RS485_GATEWAY)
-                    continue;
                 pTModule->motors[i][j].target_velocity = 0;
-                pTModule->motors[i][j].ctrl_word = 0x80;
+                pTModule->motors[i][j].ctrl_word = 0x0080;
             }
         }
     }
@@ -561,24 +585,17 @@ static void clearErrorSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *mS
 
 static int32_t handleStartSlight(ARMS_MASTER_THREAD_INFO *pTModule,int armsid,float v0,float v1,float v2,float v3,float v4,float v5,float acc_mm)
 {
+    if (armsid < 0 || armsid >= pTModule->armsSize)
+        return -1;
     pTModule->upper_target_v_Flag[armsid] = 0;
-    // 6个电机：臂电机1, 臂电机2, 臂电机3, 托板电机1, 托板电机2, 托板电机3
-    pTModule->upper_target_velocity[armsid][0] = v0; 
-    pTModule->upper_target_velocity[armsid][1] = v1;
-    pTModule->upper_target_velocity[armsid][2] = v2;
-    pTModule->upper_target_velocity[armsid][3] = v3;
-    pTModule->upper_target_velocity[armsid][4] = v4;
-    pTModule->upper_target_velocity[armsid][5] = v5;
-
-    pTModule->upper_velocity_v0[armsid][0] = pTModule->motors[armsid][0].velocity_value;
-    pTModule->upper_velocity_v0[armsid][1] = pTModule->motors[armsid][1].velocity_value;
-    pTModule->upper_velocity_v0[armsid][2] = pTModule->motors[armsid][2].velocity_value;
-    pTModule->upper_velocity_v0[armsid][3] = pTModule->motors[armsid][3].velocity_value;
-    pTModule->upper_velocity_v0[armsid][4] = pTModule->motors[armsid][4].velocity_value;
-    pTModule->upper_velocity_v0[armsid][5] = pTModule->motors[armsid][5].velocity_value;
+    const float requested[ARM_MOTOR_COUNT] = {v0, v1, v2, v3, v4, v5};
+    for (int i = 0; i < pTModule->arm_motor_count[armsid]; ++i) {
+        pTModule->upper_target_velocity[armsid][i] = requested[i];
+        pTModule->upper_velocity_v0[armsid][i] = pTModule->upper_last_v_cmd[armsid][i];
+    }
     
     // 200hz 调用周期，加减速1s
-    for (int i = 0; i < ARM_MOTOR_COUNT; i++)
+    for (int i = 0; i < pTModule->arm_motor_count[armsid]; i++)
     {
         if(pTModule->upper_target_velocity[armsid][i] > pTModule->upper_velocity_v0[armsid][i])
             pTModule->upper_acc[armsid][i] = acc_mm;
@@ -595,35 +612,39 @@ static int32_t handleStartSlight(ARMS_MASTER_THREAD_INFO *pTModule,int armsid,fl
 
 static void upperAngularVelSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *mSMsg)
 {
-    memset(pTModule->upper_target_v_Flag, 0, sizeof(uint8_t)*MASTER_ARMS_MAX_SIZE);
-    float *pVel = (float*)mSMsg->mData;
-    for (int i = 0; i < MASTER_ARMS_MAX_SIZE; i++)
-    {
-        if(mSMsg->mModuleFlag[i])
-        {
-            // 6个电机速度：臂电机1, 臂电机2, 臂电机3, 托板电机1, 托板电机2, 托板电机3
-            handleStartSlight(pTModule, i, pVel[0], pVel[1], pVel[2], pVel[3], pVel[4], pVel[5], 200);
+    if (mSMsg->mDataLength < sizeof(float) * ARM_MOTOR_COUNT * MASTER_ARMS_MAX_SIZE)
+        return;
+    const float *pVel = (const float *)mSMsg->mData;
+    for (int i = 0; i < MASTER_ARMS_MAX_SIZE * ARM_MOTOR_COUNT; ++i) {
+        if (!isfinite(pVel[i]) || fabsf(pVel[i]) > CSV_MAX_DEG_PER_SEC) {
+            fprintf(stderr, "Rejected velocity command: index=%d requested=%g deg/s; allowed finite [-%g, +%g] deg/s; targets unchanged\n",
+                    i, pVel[i], CSV_MAX_DEG_PER_SEC, CSV_MAX_DEG_PER_SEC);
+            return;
+        }
+    }
+    memset(pTModule->upper_target_p_Flag, 0, sizeof(uint8_t) * MASTER_ARMS_MAX_SIZE);
+    for (int i = 0; i < pTModule->armsSize; ++i) {
+        if (mSMsg->mModuleFlag[i]) {
+            const float *armVel = pVel + i * ARM_MOTOR_COUNT;
+            handleStartSlight(pTModule, i, armVel[0], armVel[1], armVel[2],
+                              armVel[3], armVel[4], armVel[5], CSV_ACC_DEG_PER_SEC2);
         }
     }
 }
 
 static void upperRelaPosSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *mSMsg)
 {
-    for (int i = 0; i < MASTER_ARMS_MAX_SIZE; i++)
+    if (mSMsg->mDataLength < sizeof(float) * ARM_MOTOR_COUNT * MASTER_ARMS_MAX_SIZE)
+        return;
+    for (int i = 0; i < pTModule->armsSize; i++)
     {
         if(mSMsg->mModuleFlag[i])
         {
-            float *pRpos = (float*)mSMsg->mData;
-            // 6个电机：臂电机1, 臂电机2, 臂电机3, 托板电机1, 托板电机2, 托板电机3
-            pTModule->upper_target_pos[i][0] = pTModule->motors[i][0].Ext_Pos_value + pRpos[0];
-            pTModule->upper_target_pos[i][1] = pTModule->motors[i][1].Ext_Pos_value + pRpos[1];
-            pTModule->upper_target_pos[i][2] = pTModule->motors[i][2].Ext_Pos_value + pRpos[2];
-            pTModule->upper_target_pos[i][3] = pTModule->motors[i][3].Ext_Pos_value + pRpos[3];
-            pTModule->upper_target_pos[i][4] = pTModule->motors[i][4].Ext_Pos_value + pRpos[4];
-            pTModule->upper_target_pos[i][5] = pTModule->motors[i][5].Ext_Pos_value + pRpos[5];
+            float *pRpos = (float*)mSMsg->mData + i * ARM_MOTOR_COUNT;
+            for (int j = 0; j < pTModule->arm_motor_count[i]; ++j)
+                pTModule->upper_target_pos[i][j] = pTModule->motors[i][j].Position_value + pRpos[j];
             
-            // 位置控制的PD算法控制命令（速度），进行滤波平滑
-            for (int j = 0; j < ARM_MOTOR_COUNT; j++)
+            for (int j = 0; j < pTModule->arm_motor_count[i]; j++)
             {
                 for (int k = 0; k < upper_pos_smooth_cnt; k++)
                 {
@@ -639,14 +660,16 @@ static void upperRelaPosSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *
 
 static void upperAbsPosSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *mSMsg)
 {
-    for (int i = 0; i < MASTER_ARMS_MAX_SIZE; i++)
+    if (mSMsg->mDataLength < sizeof(float) * ARM_MOTOR_COUNT * MASTER_ARMS_MAX_SIZE)
+        return;
+    for (int i = 0; i < pTModule->armsSize; i++)
     {
         if(mSMsg->mModuleFlag[i])
         {
-            float *pRpos = (float*)mSMsg->mData;
-            for (int j = 0; j < ARM_MOTOR_COUNT; j++)
+            float *pRpos = (float*)mSMsg->mData + i * ARM_MOTOR_COUNT;
+            for (int j = 0; j < pTModule->arm_motor_count[i]; j++)
             {
-                pTModule->upper_target_pos[i][j] = pRpos[i*ARM_MOTOR_COUNT+j];
+                pTModule->upper_target_pos[i][j] = pRpos[j];
                 for (int k = 0; k < upper_pos_smooth_cnt; k++)
                 {
                     pTModule->upper_pos_vel_smooth[i][j][k] = 0;
@@ -659,79 +682,333 @@ static void upperAbsPosSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *m
     }
 }
 
+static void confEL2809Pdos(ARMS_MASTER_THREAD_INFO *pTModule,ec_slave_info_t *inf,ec_slave_config_t *sc,int EK1100Index)
+{
+    for (int ch = 0; ch < 16; ++ch) {
+        pTModule->EL2809[EK1100Index][ch] = -1;
+        pTModule->EL2809_bit[EK1100Index][ch] = 0;
+        pTModule->EL2809_output[EK1100Index][ch] = 0;
+    }
+
+    ec_pdo_entry_info_t slave_el2809_pdo_entries[] = {
+        {0x7000, 0x01, 1}, /* Output */
+        {0x7010, 0x01, 1}, /* Output */
+        {0x7020, 0x01, 1}, /* Output */
+        {0x7030, 0x01, 1}, /* Output */
+        {0x7040, 0x01, 1}, /* Output */
+        {0x7050, 0x01, 1}, /* Output */
+        {0x7060, 0x01, 1}, /* Output */
+        {0x7070, 0x01, 1}, /* Output */
+        {0x7080, 0x01, 1}, /* Output */
+        {0x7090, 0x01, 1}, /* Output */
+        {0x70a0, 0x01, 1}, /* Output */
+        {0x70b0, 0x01, 1}, /* Output */
+        {0x70c0, 0x01, 1}, /* Output */
+        {0x70d0, 0x01, 1}, /* Output */
+        {0x70e0, 0x01, 1}, /* Output */
+        {0x70f0, 0x01, 1}, /* Output */
+    };
+
+    ec_pdo_info_t slave_el2809_pdos[] = {
+        {0x1600, 1, slave_el2809_pdo_entries + 0}, /* Channel 1 */
+        {0x1601, 1, slave_el2809_pdo_entries + 1}, /* Channel 2 */
+        {0x1602, 1, slave_el2809_pdo_entries + 2}, /* Channel 3 */
+        {0x1603, 1, slave_el2809_pdo_entries + 3}, /* Channel 4 */
+        {0x1604, 1, slave_el2809_pdo_entries + 4}, /* Channel 5 */
+        {0x1605, 1, slave_el2809_pdo_entries + 5}, /* Channel 6 */
+        {0x1606, 1, slave_el2809_pdo_entries + 6}, /* Channel 7 */
+        {0x1607, 1, slave_el2809_pdo_entries + 7}, /* Channel 8 */
+        {0x1608, 1, slave_el2809_pdo_entries + 8}, /* Channel 9 */
+        {0x1609, 1, slave_el2809_pdo_entries + 9}, /* Channel 10 */
+        {0x160a, 1, slave_el2809_pdo_entries + 10}, /* Channel 11 */
+        {0x160b, 1, slave_el2809_pdo_entries + 11}, /* Channel 12 */
+        {0x160c, 1, slave_el2809_pdo_entries + 12}, /* Channel 13 */
+        {0x160d, 1, slave_el2809_pdo_entries + 13}, /* Channel 14 */
+        {0x160e, 1, slave_el2809_pdo_entries + 14}, /* Channel 15 */
+        {0x160f, 1, slave_el2809_pdo_entries + 15}, /* Channel 16 */
+    };
+
+    ec_sync_info_t slave_el2809_syncs[] = {
+        {0, EC_DIR_OUTPUT, 8, slave_el2809_pdos + 0, EC_WD_ENABLE},
+        {1, EC_DIR_OUTPUT, 8, slave_el2809_pdos + 8, EC_WD_ENABLE},
+        {0xff}
+    };
+
+    if (ecrt_slave_config_pdos(sc, EC_END, slave_el2809_syncs))
+    {
+        printf("Failed to configure EL2809 PDOs!\n");
+        return;
+    }
+    printf("*Success to configuring EL2809 PDOs*\n");
+
+    // 按 Sync Manager 和 PDO 位置注册 16 个通道，避免后 8 路被映射到第一组。
+    // for (int ch = 0; ch < 16; ch++) {
+    //     unsigned int bit_pos = 0;
+    //     unsigned int sync_index = ch < 8 ? 0 : 1;
+    //     unsigned int pdo_position = (unsigned int)(ch % 8);
+    //     int byte_offset = ecrt_slave_config_reg_pdo_entry_pos(
+    //         sc, sync_index, pdo_position, 0, pTModule->domain1, &bit_pos);
+    //     pTModule->EL2809[EK1100Index][ch] = byte_offset;
+    //     pTModule->EL2809_bit[EK1100Index][ch] = (uint8_t)bit_pos;
+    //     if (byte_offset >= 0 && bit_pos > 7) {
+    //         fprintf(stderr, "EL2809 arm=%d channel=%d invalid bit offset %u\\n",
+    //                 EK1100Index, ch + 1, bit_pos);
+    //     }
+    //     printf("EL2809 arm=%d channel=%d sync=%u pdo=%u offset=%d bit=%u\n",
+    //            EK1100Index, ch + 1, sync_index, pdo_position,
+    //            byte_offset, bit_pos);
+    // }
+        // 注册16个通道的偏移量
+    for (int ch = 0; ch < 16; ch++) {
+        unsigned int bit_pos = 0;
+        int byte_offset = ecrt_slave_config_reg_pdo_entry(
+            sc,
+            0x7000 + (ch * 0x10),  // 0x7000, 0x7010, ..., 0x70f0
+            0x01,
+            pTModule->domain1,
+            &bit_pos);
+            
+        pTModule->EL2809[EK1100Index][ch] = byte_offset;
+        pTModule->EL2809_bit[EK1100Index][ch] = (uint8_t)bit_pos;
+        
+        // 打印验证，确保 offset 不是负数
+        printf("EL2809 arm=%d channel=%d offset=%d bit=%u\n", EK1100Index, ch + 1, byte_offset, bit_pos);
+    }
+
+}
+
+static void confEL6022Pdos(ARMS_MASTER_THREAD_INFO *pTModule,ec_slave_info_t *inf,ec_slave_config_t *sc,int EK1100Index)
+{
+    ec_pdo_entry_info_t slave_el6022_pdo_entries[] = {
+        {0x7001, 0x01, 16}, /* Ctrl */
+        {0x7000, 0x11, 8}, /* Data Out 0 */
+        {0x7000, 0x12, 8}, /* Data Out 1 */
+        {0x7000, 0x13, 8}, /* Data Out 2 */
+        {0x7000, 0x14, 8}, /* Data Out 3 */
+        {0x7000, 0x15, 8}, /* Data Out 4 */
+        {0x7000, 0x16, 8}, /* Data Out 5 */
+        {0x7000, 0x17, 8}, /* Data Out 6 */
+        {0x7000, 0x18, 8}, /* Data Out 7 */
+        {0x7000, 0x19, 8}, /* Data Out 8 */
+        {0x7000, 0x1a, 8}, /* Data Out 9 */
+        {0x7000, 0x1b, 8}, /* Data Out 10 */
+        {0x7000, 0x1c, 8}, /* Data Out 11 */
+        {0x7000, 0x1d, 8}, /* Data Out 12 */
+        {0x7000, 0x1e, 8}, /* Data Out 13 */
+        {0x7000, 0x1f, 8}, /* Data Out 14 */
+        {0x7000, 0x20, 8}, /* Data Out 15 */
+        {0x7000, 0x21, 8}, /* Data Out 16 */
+        {0x7000, 0x22, 8}, /* Data Out 17 */
+        {0x7000, 0x23, 8}, /* Data Out 18 */
+        {0x7000, 0x24, 8}, /* Data Out 19 */
+        {0x7000, 0x25, 8}, /* Data Out 20 */
+        {0x7000, 0x26, 8}, /* Data Out 21 */
+        {0x7011, 0x01, 16}, /* Ctrl */
+        {0x7010, 0x11, 8}, /* Data Out 0 */
+        {0x7010, 0x12, 8}, /* Data Out 1 */
+        {0x7010, 0x13, 8}, /* Data Out 2 */
+        {0x7010, 0x14, 8}, /* Data Out 3 */
+        {0x7010, 0x15, 8}, /* Data Out 4 */
+        {0x7010, 0x16, 8}, /* Data Out 5 */
+        {0x7010, 0x17, 8}, /* Data Out 6 */
+        {0x7010, 0x18, 8}, /* Data Out 7 */
+        {0x7010, 0x19, 8}, /* Data Out 8 */
+        {0x7010, 0x1a, 8}, /* Data Out 9 */
+        {0x7010, 0x1b, 8}, /* Data Out 10 */
+        {0x7010, 0x1c, 8}, /* Data Out 11 */
+        {0x7010, 0x1d, 8}, /* Data Out 12 */
+        {0x7010, 0x1e, 8}, /* Data Out 13 */
+        {0x7010, 0x1f, 8}, /* Data Out 14 */
+        {0x7010, 0x20, 8}, /* Data Out 15 */
+        {0x7010, 0x21, 8}, /* Data Out 16 */
+        {0x7010, 0x22, 8}, /* Data Out 17 */
+        {0x7010, 0x23, 8}, /* Data Out 18 */
+        {0x7010, 0x24, 8}, /* Data Out 19 */
+        {0x7010, 0x25, 8}, /* Data Out 20 */
+        {0x7010, 0x26, 8}, /* Data Out 21 */
+        {0x6001, 0x01, 16}, /* Status */
+        {0x6000, 0x11, 8}, /* Data In 0 */
+        {0x6000, 0x12, 8}, /* Data In 1 */
+        {0x6000, 0x13, 8}, /* Data In 2 */
+        {0x6000, 0x14, 8}, /* Data In 3 */
+        {0x6000, 0x15, 8}, /* Data In 4 */
+        {0x6000, 0x16, 8}, /* Data In 5 */
+        {0x6000, 0x17, 8}, /* Data In 6 */
+        {0x6000, 0x18, 8}, /* Data In 7 */
+        {0x6000, 0x19, 8}, /* Data In 8 */
+        {0x6000, 0x1a, 8}, /* Data In 9 */
+        {0x6000, 0x1b, 8}, /* Data In 10 */
+        {0x6000, 0x1c, 8}, /* Data In 11 */
+        {0x6000, 0x1d, 8}, /* Data In 12 */
+        {0x6000, 0x1e, 8}, /* Data In 13 */
+        {0x6000, 0x1f, 8}, /* Data In 14 */
+        {0x6000, 0x20, 8}, /* Data In 15 */
+        {0x6000, 0x21, 8}, /* Data In 16 */
+        {0x6000, 0x22, 8}, /* Data In 17 */
+        {0x6000, 0x23, 8}, /* Data In 18 */
+        {0x6000, 0x24, 8}, /* Data In 19 */
+        {0x6000, 0x25, 8}, /* Data In 20 */
+        {0x6000, 0x26, 8}, /* Data In 21 */
+        {0x6011, 0x01, 16}, /* Status */
+        {0x6010, 0x11, 8}, /* Data In 0 */
+        {0x6010, 0x12, 8}, /* Data In 1 */
+        {0x6010, 0x13, 8}, /* Data In 2 */
+        {0x6010, 0x14, 8}, /* Data In 3 */
+        {0x6010, 0x15, 8}, /* Data In 4 */
+        {0x6010, 0x16, 8}, /* Data In 5 */
+        {0x6010, 0x17, 8}, /* Data In 6 */
+        {0x6010, 0x18, 8}, /* Data In 7 */
+        {0x6010, 0x19, 8}, /* Data In 8 */
+        {0x6010, 0x1a, 8}, /* Data In 9 */
+        {0x6010, 0x1b, 8}, /* Data In 10 */
+        {0x6010, 0x1c, 8}, /* Data In 11 */
+        {0x6010, 0x1d, 8}, /* Data In 12 */
+        {0x6010, 0x1e, 8}, /* Data In 13 */
+        {0x6010, 0x1f, 8}, /* Data In 14 */
+        {0x6010, 0x20, 8}, /* Data In 15 */
+        {0x6010, 0x21, 8}, /* Data In 16 */
+        {0x6010, 0x22, 8}, /* Data In 17 */
+        {0x6010, 0x23, 8}, /* Data In 18 */
+        {0x6010, 0x24, 8}, /* Data In 19 */
+        {0x6010, 0x25, 8}, /* Data In 20 */
+        {0x6010, 0x26, 8}, /* Data In 21 */
+    };
+
+    ec_pdo_info_t slave_el6022_pdos[] = {
+        {0x1604, 23, slave_el6022_pdo_entries + 0}, /* COM RxPDO-Map Outputs Ch.1 */
+        {0x1605, 23, slave_el6022_pdo_entries + 23}, /* COM RxPDO-Map Outputs Ch.2 */
+        {0x1a04, 23, slave_el6022_pdo_entries + 46}, /* COM TxPDO-Map Inputs Ch.1 */
+        {0x1a05, 23, slave_el6022_pdo_entries + 69}, /* COM TxPDO-Map Inputs Ch.2 */
+    };
+
+    ec_sync_info_t slave_el6022_syncs[] = {
+        {0, EC_DIR_OUTPUT, 0, NULL, EC_WD_DISABLE},
+        {1, EC_DIR_INPUT, 0, NULL, EC_WD_DISABLE},
+        {2, EC_DIR_OUTPUT, 2, slave_el6022_pdos + 0, EC_WD_DISABLE},
+        {3, EC_DIR_INPUT, 2, slave_el6022_pdos + 2, EC_WD_DISABLE},
+        {0xff}
+    };
+
+    if (ecrt_slave_config_pdos(sc, EC_END, slave_el6022_syncs))
+    {
+        printf("Failed to configure EL6022 PDOs!\n");
+        for (int port = 0; port < 2; ++port)
+            for (int item = 0; item < 8; ++item)
+                pTModule->EL6022[EK1100Index][port][item] = -1;
+        return;
+    }
+    else
+    {
+        printf("*Success to configuring EL6022 PDOs*\n");
+    }
+
+    // 注册偏移量
+    for (int port = 0; port < 2; ++port) {
+        uint16_t txIndex = port ? 0x7010 : 0x7000;
+        uint16_t txCtrl = port ? 0x7011 : 0x7001;
+        uint16_t rxIndex = port ? 0x6010 : 0x6000;
+        uint16_t rxCtrl = port ? 0x6011 : 0x6001;
+        int outputBase = ecrt_slave_config_reg_pdo_entry(sc, txCtrl, 0x01, pTModule->domain1, NULL);
+        int outputStatus = ecrt_slave_config_reg_pdo_entry(sc, rxCtrl, 0x01, pTModule->domain1, NULL);
+        /* These maps contain a packed 16-bit control/status word, not
+         * separately registered length bytes. Disable polling until that
+         * layout is handled; absolute domain offsets 8/16 corrupt other PDOs. */
+        int outputLength = -2;
+        int inputLength = -2;
+        int dataOut = ecrt_slave_config_reg_pdo_entry(sc, txIndex, 0x11, pTModule->domain1, NULL);
+        int dataIn = ecrt_slave_config_reg_pdo_entry(sc, rxIndex, 0x11, pTModule->domain1, NULL);
+        pTModule->EL6022[EK1100Index][port][0] = outputBase;
+        pTModule->EL6022[EK1100Index][port][1] = outputLength;
+        pTModule->EL6022[EK1100Index][port][2] = dataOut;
+        pTModule->EL6022[EK1100Index][port][3] = outputStatus;
+        pTModule->EL6022[EK1100Index][port][4] = inputLength;
+        pTModule->EL6022[EK1100Index][port][5] = dataIn;
+        pTModule->EL6022[EK1100Index][port][6] = outputStatus < 0 ? outputStatus : outputStatus + 2;
+        pTModule->EL6022[EK1100Index][port][7] = outputBase < 0 ? outputBase : outputBase + 2;
+        printf("EL6022 arm=%d port=%d tx=%d len=%d data=%d rx=%d len=%d data=%d\\n",
+               EK1100Index, port, outputBase, outputLength, dataOut,
+               outputStatus, inputLength, dataIn);
+    }
+    
+}
+
 static int confSlavesPdos(ARMS_MASTER_THREAD_INFO *pTModule)
 {
+    printf(">>> Enter confSlavesPdos, armsSize=%d\n", pTModule->armsSize);
+
     if(pTModule->armsSize < 1 || pTModule->armsSize > MASTER_ARMS_MAX_SIZE)
     {
         printf("confSlavesPdos:机械臂不存在\n\r");
         return -1;
     }
 
-    // 根据静态配置表遍历所有从站
-    for (int i = 0; i < TOTAL_ARM_SLAVES; i++)
+    //遍历从站，找到所有伺服电机，并通过sdo配置所使用的pdo
+    int motecIndex=0;
+    for (int i = 0; i < pTModule->armsSize; i++)
     {
-        const SLAVE_CONFIG_T *cfg = &g_slave_config[i];
-        
-        // 创建从站配置，使用绝对position（alias=0）
-        ec_slave_config_t *ec_sla_con = ecrt_master_slave_config(
-                                            pTModule->master, 
-                                            cfg->alias,
-                                            cfg->position, 
-                                            cfg->vendor_id,
-                                            cfg->product_code);
-
-        if(ec_sla_con == NULL)
-        {
-            printf("ecrt_master_slave_config failed: 臂%d 位置%d %s\n",
-                   cfg->arm_id, cfg->position, cfg->name);
-            return -1;
-        }
-        
-        // 查找该从站在链表中的对应节点，填充slave_conf
+        motecIndex = 0; // 每个臂开始时清零
         EK1100_slaves_inf *inf_t = NULL;
-        list_for_each_entry(inf_t, &pTModule->slaves_inf[cfg->arm_id].list, list)
+        
+        list_for_each_entry(inf_t, &pTModule->slaves_inf[i].list, list)
         {
-            if(inf_t->slave_in.position == cfg->position)
-            {
-                inf_t->slave_conf = ec_sla_con;
-                break;
-            }
-        }
+            //创建从站配置，使用绝对position（alias=0）
+            ec_slave_config_t *ec_sla_con = ecrt_master_slave_config(
+                                                pTModule->master, 
+                                                0,
+                                                inf_t->slave_in.position, 
+                                                inf_t->slave_in.vendor_id,
+                                                inf_t->slave_in.product_code);
 
-        // 根据从站类型配置不同的PDO
-        switch(cfg->type)
-        {
-            case SLAVE_TYPE_ARM_MOTOR:
-            case SLAVE_TYPE_PALLET_MOTOR:
+            if(ec_sla_con == NULL)
             {
-                // 臂电机和托板电机都使用SOMANET CSV模式PDO
-                int motor_idx = i % ARM_SLAVES_PER_ARM;
-                
+                printf("ecrt_master_slave_config ********* NULL\n");
+                return -1;
+            }
+
+
+            inf_t->slave_conf = ec_sla_con;
+            //如果是EK1100节点的话就赋值后continue
+            if(strstr(inf_t->slave_in.name,"EK1100") != NULL)
+            {
+                motecIndex=0;
+            }
+
+            if(strstr(inf_t->slave_in.name,"EL2809") != NULL)
+            {
+                printf("EL2809 EL2809\n");
+                confEL2809Pdos(pTModule, &inf_t->slave_in, ec_sla_con, i);
+            }
+
+            if(strstr(inf_t->slave_in.name,"EL6022") != NULL)
+            {
+                printf("EL6022 EL6022\n");
+                confEL6022Pdos(pTModule, &inf_t->slave_in, ec_sla_con, i);
+            }
+
+            //机械臂的somanet结点，
+            if(strstr(inf_t->slave_in.name,"KDE") != NULL)
+            {
                 if(pTModule->somanetn_mode == MODE_CSV)
                 {
-                    confSomanetCSVPdos(pTModule->domain1, &inf_t->slave_in, ec_sla_con, 
-                                     &pTModule->somanet_pdo[cfg->arm_id][motor_idx]);
+                    if (motecIndex >= ARM_MOTOR_COUNT ||
+                        confSomanetCSVPdos(pTModule->domain1, &inf_t->slave_in, ec_sla_con,
+                                          &pTModule->somanet_pdo[i][motecIndex]) < 0)
+                        return -1;
                 }
-                printf("已配置臂%d 电机%d PDO (position=%d)\n", 
-                       cfg->arm_id, motor_idx, cfg->position);
-                break;
+                motecIndex++;
+            }
+
+            //如果是EK1110节点的话就赋值后continue
+            if(strstr(inf_t->slave_in.name,"EK1110") != NULL)
+            {
+                printf("EK1110 EK1110\n");
             }
             
-            case SLAVE_TYPE_RS485_GATEWAY:
-            {
-                // RS485网关：目前不配置电机PDO
-                // 如果该网关有特定PDO，需要在这里单独配置
-                printf("RS485网关 臂%d 位置%d 跳过电机PDO配置\n", 
-                       cfg->arm_id, cfg->position);
-                break;
-            }
-            
-            default:
-            {
-                printf("未知从站类型: 臂%d 位置%d\n", cfg->arm_id, cfg->position);
-                break;
-            }
         }
+
+        pTModule->arm_motor_count[i] = motecIndex; 
+        printf(">>> 臂%d 实际配置了 %d 个电机\n", i, pTModule->arm_motor_count[i]);
+
     }
     
     printf("###########################\n");
@@ -744,46 +1021,28 @@ static int activeMater(ARMS_MASTER_THREAD_INFO *pTModule)
     if(pTModule->slaves_size < 1)
       return iRet;
     
-    // 设置DC时钟：所有电机从站
-    for (int i = 0; i < TOTAL_ARM_SLAVES; i++)
+    //设置DC时钟
+    for (int i = 0; i < pTModule->armsSize; i++)
     {
-        const SLAVE_CONFIG_T *cfg = &g_slave_config[i];
-        
-        // 只有电机从站需要DC
-        if(cfg->type == SLAVE_TYPE_RS485_GATEWAY)
-            continue;
-        
         // 查找对应slave_conf
         EK1100_slaves_inf *inf_t = NULL;
-        list_for_each_entry(inf_t, &pTModule->slaves_inf[cfg->arm_id].list, list)
+        list_for_each_entry(inf_t, &pTModule->slaves_inf[i].list, list)
         {
-            if(inf_t->slave_in.position == cfg->position)
-            {
-                if(inf_t->slave_conf != NULL)
-                {
-                    ecrt_slave_config_dc(inf_t->slave_conf, 0x0700, 1000000, 500000, 0, 0);
-                    printf("臂%d 电机(position=%d) 已配置DC时钟\n", cfg->arm_id, cfg->position);
-                }
-                break;
+            //电机使用dc
+            if(strstr(inf_t->slave_in.name,"KDE") != NULL)
+            {    
+                //ecrt_slave_config_dc(inf_t->slave_conf, 0x0700, 1000000, 500000, 0, 0); 
+                // 尝试将 shift time 改为 0
+                ecrt_slave_config_dc(inf_t->slave_conf, 0x0300, 1000000, 500000, 0, 0); 
+                printf("%s DC 配置成功！\n",inf_t->slave_in.name);
             }
         }
     }
 
-    // 选择第一个电机从站作为参考时钟（避免RS485网关作为参考时钟）
-    EK1100_slaves_inf *ref_slave = NULL;
-    list_for_each_entry(ref_slave, &pTModule->slaves_inf[0].list, list)
-    {
-        if(ref_slave->slave_conf != NULL && 
-           g_slave_config[ref_slave->slave_in.position % TOTAL_ARM_SLAVES].type != SLAVE_TYPE_RS485_GATEWAY)
-        {
-            int ret = ecrt_master_select_reference_clock(pTModule->master, ref_slave->slave_conf);
-            if (ret < 0) {
-                printf("Failed to select reference clock\n");
-                return iRet;
-            }
-            printf("参考时钟: 臂0 电机从站 position=%d\n", ref_slave->slave_in.position);
-            break;
-        }
+    int ret = ecrt_master_select_reference_clock(pTModule->master, NULL);
+    if (ret < 0) {
+        printf("Failed to select reference clock\n");
+        return iRet;
     }
 
     printf("Activating master...\n");
@@ -831,10 +1090,20 @@ static void LoopRecLocalMsg(ARMS_MASTER_THREAD_INFO *pTModule)
     socklen_t mun = sizeof(mPeerAddr);
     char mLocalData[Msg_T_S];
 
-    if(recvfrom(pTModule->mSoket, mLocalData, Msg_T_S, 0, (struct sockaddr*)&(mPeerAddr), &mun)>0)
+    ssize_t recvSize = recvfrom(pTModule->mSoket, mLocalData, Msg_T_S, 0,
+                                (struct sockaddr *)&mPeerAddr, &mun);
+    if (recvSize >= (ssize_t)sizeof(MsgHeader))
     {
       MsgHeader *mMsg = (MsgHeader *)mLocalData;
-      //MsgLongMsg *mLMsg = (MsgLongMsg *)mLocalData;
+      SUPR_R_MSG *upperMsg = NULL;
+      size_t upperAvailable = 0;
+      if (recvSize >= (ssize_t)(offsetof(MsgLongMsg, mData) + offsetof(SUPR_R_MSG, mData))) {
+          MsgLongMsg *mLMsg = (MsgLongMsg *)mLocalData;
+          upperMsg = (SUPR_R_MSG *)mLMsg->mData;
+          upperAvailable = (size_t)recvSize - offsetof(MsgLongMsg, mData);
+          if (upperMsg->mDataLength > upperAvailable - offsetof(SUPR_R_MSG, mData))
+              upperMsg = NULL;
+      }
       switch (mMsg->mMsgId)
       {
         
@@ -850,11 +1119,11 @@ static void LoopRecLocalMsg(ARMS_MASTER_THREAD_INFO *pTModule)
         }
         case CMD_MASTER_OP_KEYDOWN:
         {
-          //只能使用速度模式，因为驱动器pos设置的是外部编码器
+            //只能使用速度模式，因为驱动器pos设置的是外部编码器
             pTModule->somanetn_mode = MODE_CSV;
             activeMaterKeydown(pTModule);
             //打开拉力计串口
-          break;
+            break;
         }
         case CMD_DESTROY_MASTER:
         {
@@ -893,31 +1162,52 @@ static void LoopRecLocalMsg(ARMS_MASTER_THREAD_INFO *pTModule)
         {
             activeMater(pTModule);
             break;
-        }   
+        }
+        case CMD_EL2809_OUTPUT:
+        {
+            SUPR_R_MSG *commandMsg = upperMsg;
+            if (commandMsg && commandMsg->mDataLength == sizeof(EL2809_OUTPUT_CMD))
+            {
+                EL2809_OUTPUT_CMD *command = (EL2809_OUTPUT_CMD *)commandMsg->mData;
+                if (command->arm_index < pTModule->armsSize && command->channel < 16)
+                {
+                    pTModule->EL2809_output[command->arm_index][command->channel] = command->enabled != 0;
+                    //printf("收到IO命令: Arm=%d, Ch=%d, En=%d\n", command->arm_index, command->channel, command->enabled);
+                }
+            }
+            break;
+        }
         case CMD_IGH_CLEAR_ERROR:
         {
-            MsgLongMsg *mLMsg = (MsgLongMsg *)mLocalData;
-            clearErrorSomanets(pTModule,(SUPR_R_MSG *)mLMsg->mData);
+            if (upperMsg)
+                clearErrorSomanets(pTModule, upperMsg);
             break;
         }
         case CMD_HAND_VEL_MM:
         {
-            MsgLongMsg *mLMsg = (MsgLongMsg *)mLocalData;
-            memset(pTModule->upper_target_p_Flag,0,sizeof(uint8_t)*MASTER_ARMS_MAX_SIZE);
-            upperAngularVelSomanets(pTModule,(SUPR_R_MSG *)mLMsg->mData);
-            
+            SUPR_R_MSG *commandMsg = upperMsg;
+            if (commandMsg && commandMsg->mDataLength == sizeof(float) * ARM_MOTOR_COUNT * MASTER_ARMS_MAX_SIZE) {
+                upperAngularVelSomanets(pTModule, commandMsg);
+                printf("Received velocity command: arm flags=%u,%u length=%u\n",
+                       commandMsg->mModuleFlag[0], commandMsg->mModuleFlag[1], commandMsg->mDataLength);
+            } else {
+                fprintf(stderr, "Invalid velocity command length=%d\n",
+                        commandMsg ? (int)commandMsg->mDataLength : -1);
+            }
             break;
         }
         case CMD_HAND_RELA_POS_MM:
         {
-            MsgLongMsg *mLMsg = (MsgLongMsg *)mLocalData;
-            upperRelaPosSomanets(pTModule,(SUPR_R_MSG *)mLMsg->mData);
+            fprintf(stderr, "Position command: cyclic position controller is inactive; no position-to-velocity output generated\n");
+            if (upperMsg)
+                upperRelaPosSomanets(pTModule, upperMsg);
             break;
         }
         case CMD_HAND_ABS_POS_M:
         {
-            MsgLongMsg *mLMsg = (MsgLongMsg *)mLocalData;
-            upperAbsPosSomanets(pTModule,(SUPR_R_MSG *)mLMsg->mData);
+            fprintf(stderr, "Position command: cyclic position controller is inactive; no position-to-velocity output generated\n");
+            if (upperMsg)
+                upperAbsPosSomanets(pTModule, upperMsg);
             break;
         }
         default:
@@ -932,6 +1222,37 @@ static void LoopRecLocalMsg(ARMS_MASTER_THREAD_INFO *pTModule)
 
 static void  cyc_vel_upper_cmd(ARMS_MASTER_THREAD_INFO *pTModule)
 {
+    for (int arm = 0; arm < pTModule->armsSize; ++arm) {
+        if (!pTModule->masterActivated || pTModule->arm_fsa[arm] != S_OP_OK) {
+            resetVelocityRamp(pTModule, arm);
+            continue;
+        }
+        if (!pTModule->upper_target_v_Flag[arm])
+            continue;
+        for (int motor = 0; motor < pTModule->arm_motor_count[arm]; ++motor) {
+            const float target = pTModule->upper_target_velocity[arm][motor];
+            float current = pTModule->upper_last_v_cmd[arm][motor];
+            const float step = pTModule->upper_acc[arm][motor] * 0.005f;
+            if (step > 0.0f && current + step >= target)
+                current = target;
+            else if (step < 0.0f && current + step <= target)
+                current = target;
+            else
+                current += step;
+            pTModule->upper_last_v_cmd[arm][motor] = current;
+            pTModule->motors[arm][motor].target_velocity = (int32_t)(current * CSV_COUNTS_PER_DEG);
+        }
+        bool reached = true;
+        for (int motor = 0; motor < pTModule->arm_motor_count[arm]; ++motor) {
+            if (pTModule->upper_last_v_cmd[arm][motor] != pTModule->upper_target_velocity[arm][motor]) {
+                reached = false;
+                break;
+            }
+        }
+        if (reached)
+            pTModule->upper_target_v_Flag[arm] = 0;
+    }
+
     /**
      * 200HZ 运行周期
      */
@@ -1104,7 +1425,7 @@ static void  cyc_pos_upper_cmd(ARMS_MASTER_THREAD_INFO *pTModule)
 static uint64_t system_time_ns(void)
 {
     struct timespec  rt_time;
-    clock_gettime(CLOCK_REALTIME, &rt_time);
+    clock_gettime(CLOCK_MONOTONIC, &rt_time);
     uint64_t time = TIMESPEC2NS(rt_time);
     return time;
 }
@@ -1116,49 +1437,73 @@ static int32_t armsFsa(ARMS_MASTER_THREAD_INFO *pTModule)
     //有限状态机切换
     for (int i = 0; i < pTModule->armsSize; i++)
     {
+        // 如果该臂没有电机，跳过
+        if(pTModule->arm_motor_count[i] == 0) continue;
         //4个伺服电机、EK1100 Ek1110 ...
-        if(pTModule->slaves_inf[i].childSlaveSize>4)
-        {
+        // if(pTModule->slaves_inf[i].childSlaveSize>4)
+        // {
             //写入4个电机的数据
             switch (pTModule->arm_fsa[i])
             {
                 case S_SHUTDOWN:
                 {
                     //"开启"禁用状态，此时需要发送控制字
-                    for (int j = 0; j < 4; j++)
+                    for (int j = 0; j < pTModule->arm_motor_count[i]; j++)
                     {
                         pTModule->motors[i][j].ctrl_word = 0x0006;
-                        pTModule->motors[i][j].operation_mode = pTModule->somanetn_mode;
+                        //pTModule->motors[i][j].operation_mode = pTModule->somanetn_mode;
                         pTModule->motors[i][j].target_velocity = 0;
                     }
                     break;
                 }
                 case S_SWITCH_ON:
                 {
-                    for (int j = 0; j < 4; j++)
+                    for (int j = 0; j < pTModule->arm_motor_count[i]; j++)
                     {
                         pTModule->motors[i][j].ctrl_word = 0x0007;
-                        pTModule->motors[i][j].operation_mode = pTModule->somanetn_mode;
+                        //pTModule->motors[i][j].operation_mode = pTModule->somanetn_mode;
                         pTModule->motors[i][j].target_velocity = 0;   
                     }                   
+                    break;
+                }
+                case S_CLEAR_ERROR:
+                {
+                    bool cleared = true;
+                    for (int j = 0; j < pTModule->arm_motor_count[i]; j++) {
+                        if (pTModule->motors[i][j].status_word & 0x0008) {
+                            pTModule->motors[i][j].ctrl_word = 0x0080;
+                            cleared = false;
+                        } else {
+                            pTModule->motors[i][j].ctrl_word = 0x0006;
+                        }
+                        pTModule->motors[i][j].target_velocity = 0;
+                    }
+                    if (cleared)
+                        pTModule->arm_fsa[i] = S_SHUTDOWN;
                     break;
                 }
                 case S_ENABLE_OP:
                 {
                     //判断状态字是否op成功
-                    if
-                    ( (pTModule->motors[i][0].status_word&0x67)==0x27 &&(pTModule->motors[i][1].status_word&0x67)==0x27 && 
-                      (pTModule->motors[i][2].status_word&0x67)==0x27 && (pTModule->motors[i][3].status_word&0x67)==0x27
-                    )
+                    bool all_enabled = true;
+                    for (int j = 0; j < pTModule->arm_motor_count[i]; j++)
+                    {
+                        if ((pTModule->motors[i][j].status_word & 0x67) != 0x27)
+                        {
+                            all_enabled = false;
+                            break;
+                        }
+                    }
+                    if (all_enabled)
                     {
                         pTModule->arm_fsa[i] = S_OP_OK;
                     }
                     else
                     {
-                        for (int j = 0; j < 4; j++)
+                        for (int j = 0; j < pTModule->arm_motor_count[i]; j++)
                         {
                             pTModule->motors[i][j].ctrl_word = 0x000F;
-                            pTModule->motors[i][j].operation_mode = pTModule->somanetn_mode;
+                            //pTModule->motors[i][j].operation_mode = pTModule->somanetn_mode;
                         }
                     }
                     break;
@@ -1166,8 +1511,9 @@ static int32_t armsFsa(ARMS_MASTER_THREAD_INFO *pTModule)
                 case S_HAIT:
                 {
                     
-                    for (int j = 0; j < 4; j++)
+                    for (int j = 0; j < pTModule->arm_motor_count[i]; j++)
                     {
+                        
                         pTModule->motors[i][j].ctrl_word = 0x02; 
                         pTModule->motors[i][j].target_velocity = 0;
                     }
@@ -1190,7 +1536,7 @@ static int32_t armsFsa(ARMS_MASTER_THREAD_INFO *pTModule)
                 default:{
                     break;
                 }
-            }
+            // }
 
             //电机再op状态下出现error，进行急停
             // if(chaeckArmIError(pTModule,i)!=0 && (pTModule->arm_fsa[i]==S_ENABLE_OP || pTModule->arm_fsa[i]==S_NULL))
@@ -1325,10 +1671,7 @@ void* master_arms_threadEntry(void* pModule)
         //主站激活之后才发送消息到上位机
         if(pTModule->masterActivated)
         {
-            //packM_S_MSG(pTModule);
-            //packM_S_Sample_MSG(pTModule);     
-
-
+            sendTelemetry(pTModule);
         }
     }
     
@@ -1369,29 +1712,166 @@ void* master_arms_threadEntry(void* pModule)
 * @param pTModule : args
 * @return Descriptions
 ******************************************************************************/
+static uint16_t modbusCrc16(const uint8_t *data, size_t length)
+{
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < length; ++i) {
+        crc ^= data[i];
+        for (int bit = 0; bit < 8; ++bit)
+            crc = (crc & 1) ? (crc >> 1) ^ 0xA001 : crc >> 1;
+    }
+    return crc;
+}
+
+static void pollEL6022(ARMS_MASTER_THREAD_INFO *pTModule)
+{
+    static uint32_t cycle = 0;
+    cycle++;
+    uint32_t now = cycle;
+
+    for (int arm = 0; arm < pTModule->armsSize && arm < MASTER_TELEMETRY_MAX_ARMS; ++arm) {
+        for (int port = 0; port < 2; ++port) {
+            int txCtrlOffset = pTModule->EL6022[arm][port][0];
+            int txLengthOffset = pTModule->EL6022[arm][port][1];
+            int txOffset = pTModule->EL6022[arm][port][2];
+            int rxCtrlOffset = pTModule->EL6022[arm][port][3];
+            int rxLengthOffset = pTModule->EL6022[arm][port][4];
+            int rxOffset = pTModule->EL6022[arm][port][5];
+            if (txCtrlOffset < 0 || txLengthOffset < 0 || txOffset < 0 ||
+                rxCtrlOffset < 0 || rxLengthOffset < 0 || rxOffset < 0)
+                continue;
+
+            uint16_t txCtrl = EC_READ_U16(pTModule->domain1_pd + txCtrlOffset);
+            uint16_t rxCtrl = EC_READ_U16(pTModule->domain1_pd + rxCtrlOffset);
+            uint8_t inputLength = EC_READ_U8(pTModule->domain1_pd + rxLengthOffset);
+            uint8_t *rx = pTModule->el6022_rx[arm][port];
+            uint8_t *rxCount = &pTModule->el6022_rx_count[arm][port];
+            if ((rxCtrl & 0x0002) != ((txCtrl & 0x0002) ? 0x0002 : 0)) {
+                if (inputLength && inputLength <= 22 && *rxCount + inputLength <= 22) {
+                    for (uint8_t i = 0; i < inputLength; ++i)
+                        rx[(*rxCount)++] = EC_READ_U8(pTModule->domain1_pd + rxOffset + i);
+                } else {
+                    *rxCount = 0;
+                }
+                uint16_t outCtrl = EC_READ_U16(pTModule->domain1_pd + txCtrlOffset);
+                outCtrl = (outCtrl & ~0x0002) | ((rxCtrl & 0x0002) ? 0x0002 : 0);
+                EC_WRITE_U16(pTModule->domain1_pd + txCtrlOffset, outCtrl);
+            }
+
+            if (*rxCount >= 9) {
+                for (uint8_t start = 0; start + 9 <= *rxCount; ++start) {
+                    if (rx[start] >= 1 && rx[start] <= (port == 0 ? 3 : 4) &&
+                        rx[start + 1] == 0x03 && rx[start + 2] == 4) {
+                        uint16_t crc = modbusCrc16(rx + start, 7);
+                        if (rx[start + 7] == (uint8_t)crc && rx[start + 8] == (uint8_t)(crc >> 8)) {
+                            int index = port == 0 ? rx[start] - 1 : 3 + rx[start] - 1;
+                            uint32_t raw = ((uint32_t)rx[start + 3] << 24) | ((uint32_t)rx[start + 4] << 16) |
+                                           ((uint32_t)rx[start + 5] << 8) | rx[start + 6];
+                            pTModule->sensor_value[arm][index] = (int32_t)raw;
+                            pTModule->sensor_valid[arm][index] = 1;
+                        }
+                    }
+                }
+                *rxCount = 0;
+            }
+
+            if (pTModule->el6022_tx_len[arm][port] == 0 && now >= pTModule->el6022_next_poll_ms[arm][port]) {
+                uint8_t sensorCount = port == 0 ? 3 : 4;
+                uint8_t sensorIndex = pTModule->el6022_sensor_index[arm][port] % sensorCount;
+                uint8_t *request = pTModule->el6022_tx[arm][port];
+                request[0] = sensorIndex + 1;
+                request[1] = 0x03; request[2] = 0; request[3] = 0x14;
+                request[4] = 0; request[5] = 2;
+                uint16_t crc = modbusCrc16(request, 6);
+                request[6] = (uint8_t)crc; request[7] = (uint8_t)(crc >> 8);
+                pTModule->el6022_tx_len[arm][port] = 8;
+                pTModule->el6022_tx_pos[arm][port] = 0;
+                pTModule->el6022_sensor_index[arm][port] = (sensorIndex + 1) % sensorCount;
+                pTModule->el6022_next_poll_ms[arm][port] = now + 100;
+            }
+
+            uint8_t txLen = pTModule->el6022_tx_len[arm][port];
+            uint16_t txStatus = EC_READ_U16(pTModule->domain1_pd + pTModule->EL6022[arm][port][6]);
+            if (txLen && (txStatus & 0x0002) == ((txCtrl & 0x0001) ? 0x0002 : 0)) {
+                uint8_t pos = pTModule->el6022_tx_pos[arm][port];
+                uint8_t chunk = txLen - pos;
+                if (chunk > 22) chunk = 22;
+                for (uint8_t i = 0; i < chunk; ++i)
+                    EC_WRITE_U8(pTModule->domain1_pd + txOffset + i, pTModule->el6022_tx[arm][port][pos + i]);
+                EC_WRITE_U8(pTModule->domain1_pd + txLengthOffset, chunk);
+                uint16_t request = txCtrl & ~0x0001;
+                request |= (txCtrl & 0x0001) ? 0 : 0x0001;
+                EC_WRITE_U16(pTModule->domain1_pd + txCtrlOffset, request);
+                pTModule->el6022_tx_pos[arm][port] += chunk;
+                if (pTModule->el6022_tx_pos[arm][port] >= txLen)
+                    pTModule->el6022_tx_len[arm][port] = 0;
+            }
+        }
+    }
+}
+ 
+ static void sendTelemetry(ARMS_MASTER_THREAD_INFO *pTModule)
+ {
+    if (!pTModule->masterActivated || pTModule->masterId != 0)
+        return;
+    MASTER_TELEMETRY telemetry;
+    memset(&telemetry, 0, sizeof(telemetry));
+    telemetry.magic = MASTER_TELEMETRY_MAGIC;
+    telemetry.version = MASTER_TELEMETRY_VERSION;
+    telemetry.size = sizeof(telemetry);
+    telemetry.arm_count = pTModule->armsSize;
+    telemetry.master_al_state = pTModule->al_states;
+    telemetry.domain_wc = pTModule->domain_wc;
+    for (int arm = 0; arm < pTModule->armsSize && arm < MASTER_TELEMETRY_MAX_ARMS; ++arm) {
+        telemetry.motor_count[arm] = pTModule->arm_motor_count[arm];
+        for (int motor = 0; motor < pTModule->arm_motor_count[arm] && motor < MASTER_TELEMETRY_MAX_MOTORS; ++motor) {
+            telemetry.motor[arm][motor].status_word = pTModule->motors[arm][motor].status_word;
+            telemetry.motor[arm][motor].position = pTModule->motors[arm][motor].Position_value;
+            telemetry.motor[arm][motor].velocity = pTModule->motors[arm][motor].velocity_value;
+            telemetry.motor[arm][motor].torque = pTModule->motors[arm][motor].torque_act_value;
+            telemetry.motor[arm][motor].error_code = pTModule->motors[arm][motor].error_code;
+        }
+        for (int ch = 0; ch < 16; ++ch) {
+            if (pTModule->EL2809[arm][ch] >= 0)
+                telemetry.el2809[arm][ch] = pTModule->EL2809_output[arm][ch];
+        }
+        for (int sensor = 0; sensor < MASTER_TELEMETRY_SENSOR_COUNT; ++sensor) {
+            telemetry.sensor_value[arm][sensor] = pTModule->sensor_value[arm][sensor];
+            telemetry.sensor_valid[arm][sensor] = pTModule->sensor_valid[arm][sensor];
+        }
+        for (int port = 0; port < 2; ++port) {
+            int statusOffset = pTModule->EL6022[arm][port][3];
+            int dataOffset = pTModule->EL6022[arm][port][5];
+            if (statusOffset >= 0 && dataOffset >= 0) {
+                telemetry.el6022_status[arm][port] = EC_READ_U16(pTModule->domain1_pd + statusOffset);
+                for (int byte = 0; byte < MASTER_TELEMETRY_SERIAL_BYTES; ++byte)
+                    telemetry.el6022_data[arm][port][byte] = EC_READ_U8(pTModule->domain1_pd + dataOffset + byte);
+            }
+        }
+    }
+    MsgSendLongMsg(pTModule->mSoket, get_port("LISTENER_LOCAL_PORT"), MN_ID_LEADER, MN_ID_SUPR,
+                   MSG_ID_MASTER_TELEMETRY, 0, 0, (const char *)&telemetry, sizeof(telemetry));
+}
+
 static void reflash_tpdo_Ebus(ARMS_MASTER_THREAD_INFO *pTModule)
 {
     // 读取交换somanet的数据
     for (int i = 0; i < pTModule->armsSize; i++)
     {
-        if(pTModule->slaves_inf[i].childSlaveSize != ARM_SLAVES_PER_ARM)
-            continue;
+        if (pTModule->arm_motor_count[i] == 0) continue;
 
-        for (int j = 0; j < ARM_SLAVES_PER_ARM; j++)
+        for (int j = 0; j < pTModule->arm_motor_count[i]; j++)
         {
-            // 跳过RS485网关
-            if(g_slave_config[i*ARM_SLAVES_PER_ARM+j].type == SLAVE_TYPE_RS485_GATEWAY)
-                continue;
                 
             // CSV、CSP模式下都需要刷新
             pTModule->motors[i][j].status_word    = EC_READ_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].status_word);
+            pTModule->motors[i][j].Position_value = EC_READ_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].Position_value);
             pTModule->motors[i][j].velocity_value = EC_READ_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].velocity_value);
-            pTModule->motors[i][j].Ext_Pos_value = EC_READ_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].Ext_Pos_value);
-            pTModule->motors[i][j].Int_Pos_value = EC_READ_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].Int_Pos_value);
+            pTModule->motors[i][j].torque_act_value = EC_READ_S16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].torque_act_value);
             
             // CVS模式下，算法要用到力矩偏置
-            pTModule->motors[i][j].torque_act_value = EC_READ_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].torque_act_value);
-            pTModule->motors[i][j].torque_demand = EC_READ_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].torque_demand);
+            pTModule->motors[i][j].following_error = EC_READ_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].following_error);
+            pTModule->motors[i][j].error_code = EC_READ_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].error_code);
         }
     }
 }
@@ -1401,21 +1881,76 @@ static void reflash_rpdo_Ebus(ARMS_MASTER_THREAD_INFO *pTModule)
     // 写入交换somanet的数据，1ms刷新写入一次
     for (int i = 0; i < pTModule->armsSize; i++)
     {
-        if(pTModule->slaves_inf[i].childSlaveSize != ARM_SLAVES_PER_ARM)
-            continue;
+        if (pTModule->arm_motor_count[i] == 0) continue;
 
-        if(pTModule->somanetn_mode == MODE_CSV)
+        for (int j = 0; j < pTModule->arm_motor_count[i]; j++)
         {
-            for (int j = 0; j < ARM_SLAVES_PER_ARM; j++)
-            {
-                // 跳过RS485网关
-                if(g_slave_config[i*ARM_SLAVES_PER_ARM+j].type == SLAVE_TYPE_RS485_GATEWAY)
-                    continue;
-                    
-                EC_WRITE_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].ctrl_word, pTModule->motors[i][j].ctrl_word);
-                EC_WRITE_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].operation_mode, pTModule->motors[i][j].operation_mode);
-                EC_WRITE_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].target_velocity, pTModule->motors[i][j].target_velocity);
-                EC_WRITE_S16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].torque_offset, pTModule->motors[i][j].torque_offset);
+            EC_WRITE_U16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].ctrl_word, pTModule->motors[i][j].ctrl_word);
+            EC_WRITE_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].target_position, pTModule->motors[i][j].target_position);
+            EC_WRITE_S32(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].target_velocity, pTModule->motors[i][j].target_velocity);
+            EC_WRITE_S16(pTModule->domain1_pd + pTModule->somanet_pdo[i][j].target_torque, pTModule->motors[i][j].target_torque);
+        }
+    }
+    pollEL6022(pTModule);
+     // ================== EL2809 控制逻辑 ==================
+    for (int arm = 0; arm < pTModule->armsSize; ++arm) {
+        for (int ch = 0; ch < 16; ++ch) {
+            int byte_offset = pTModule->EL2809[arm][ch];
+            unsigned int bit = pTModule->EL2809_bit[arm][ch];
+            if (byte_offset >= 0 && bit < 8)
+                EC_WRITE_BIT(pTModule->domain1_pd + byte_offset, bit,
+                             pTModule->EL2809_output[arm][ch]);
+        }
+    }
+
+    static unsigned int diagnostic_cycle = 0;
+    static int32_t previous_position[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
+    static struct timespec previous_position_time[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
+    static bool previous_position_valid[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
+    if (++diagnostic_cycle % 1000 == 0) {
+        struct timespec diagnostic_time;
+        clock_gettime(CLOCK_MONOTONIC, &diagnostic_time);
+        for (int arm = 0; arm < pTModule->armsSize; ++arm) {
+            for (int motor = 0; motor < pTModule->arm_motor_count[arm]; ++motor) {
+                motec_pdos *pdo = &pTModule->somanet_pdo[arm][motor];
+                motec_motors *state = &pTModule->motors[arm][motor];
+                if (pdo->mode_display_request) {
+                    pdo->mode_request_state = ecrt_sdo_request_state(pdo->mode_display_request);
+                    if (pdo->mode_request_state == EC_REQUEST_SUCCESS &&
+                        ecrt_sdo_request_data_size(pdo->mode_display_request) == 1)
+                        pdo->mode_display = EC_READ_S8(ecrt_sdo_request_data(pdo->mode_display_request));
+                    else if (pdo->mode_request_state == EC_REQUEST_ERROR)
+                        pdo->mode_display = -1;
+                    if (pdo->mode_request_state != EC_REQUEST_BUSY)
+                        ecrt_sdo_request_read(pdo->mode_display_request);
+                }
+                int64_t position_delta = 0;
+                double position_delta_seconds = 0.0;
+                bool position_delta_valid = previous_position_valid[arm][motor];
+                if (position_delta_valid) {
+                    position_delta = (int64_t)state->Position_value - previous_position[arm][motor];
+                    position_delta_seconds = (diagnostic_time.tv_sec - previous_position_time[arm][motor].tv_sec) +
+                        (diagnostic_time.tv_nsec - previous_position_time[arm][motor].tv_nsec) / 1e9;
+                    position_delta_valid = position_delta_seconds > 0.0;
+                }
+                previous_position[arm][motor] = state->Position_value;
+                previous_position_time[arm][motor] = diagnostic_time;
+                previous_position_valid[arm][motor] = true;
+                double position_counts_per_second = position_delta_valid ?
+                    (double)position_delta / position_delta_seconds : 0.0;
+                printf("Servo master=%d arm=%d motor=%d requested_deg_s=%g ramp_deg_s=%g target_counts_s=%d written60ff_counts_s=%d cw=0x%04x sw=0x%04x error=0x%04x pos6064=%d pos_delta=%" PRId64 " counts dt=%.6f s pos_diff=%.3f counts/s (%s) vel606c_raw=%d fsa=%d mode6061=%d sdo_state=%d offsets(tv,pos,vel)=%d,%d,%d WC=%u/%d\n",
+                       pTModule->masterId, arm, motor,
+                       pTModule->upper_target_velocity[arm][motor],
+                       pTModule->upper_last_v_cmd[arm][motor], state->target_velocity,
+                       EC_READ_S32(pTModule->domain1_pd + pdo->target_velocity),
+                       state->ctrl_word, state->status_word, state->error_code,
+                       state->Position_value, position_delta, position_delta_seconds,
+                       position_counts_per_second,
+                       position_delta_valid ? "valid" : "invalid-first-sample",
+                       state->velocity_value, pTModule->arm_fsa[arm],
+                       pdo->mode_display, pdo->mode_request_state,
+                       pdo->target_velocity, pdo->Position_value, pdo->velocity_value,
+                       pTModule->domain1_state.working_counter, pTModule->domain1_state.wc_state);
             }
         }
     }

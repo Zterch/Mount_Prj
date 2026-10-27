@@ -10,6 +10,8 @@
 #include <QScrollArea>
 #include <QVBoxLayout>
 #include <QGroupBox>
+#include <QPushButton>
+#include <cstring>
 
 namespace MountShow {
 
@@ -103,13 +105,13 @@ void MainWindow::setupConnections()
     // 系统操作
     connect(ui->btnCreateMasters, &QPushButton::clicked, this, &MainWindow::onCreateMastersClicked);
     connect(ui->btnScanSlaves, &QPushButton::clicked, this, &MainWindow::onScanSlavesClicked);
-    connect(ui->btnStartOp, &QPushButton::clicked, this, &MainWindow::onStartOpClicked);
+    connect(ui->btnGlobalEnableOp, &QPushButton::clicked, this, &MainWindow::onStartOpClicked);
     connect(ui->btnDestroyMaster, &QPushButton::clicked, this, &MainWindow::onDestroyMasterClicked);
 
     // 全局 FSA
     connect(ui->btnGlobalShutdown, &QPushButton::clicked, this, &MainWindow::onGlobalShutdown);
     connect(ui->btnGlobalSwitchOn, &QPushButton::clicked, this, &MainWindow::onGlobalSwitchOn);
-    connect(ui->btnGlobalEnableOp, &QPushButton::clicked, this, &MainWindow::onGlobalEnableOp);
+    connect(ui->btnStartOp, &QPushButton::clicked, this, &MainWindow::onGlobalEnableOp);
     connect(ui->btnGlobalHalt, &QPushButton::clicked, this, &MainWindow::onGlobalHalt);
     connect(ui->btnGlobalClearError, &QPushButton::clicked, this, &MainWindow::onGlobalClearError);
 
@@ -117,6 +119,7 @@ void MainWindow::setupConnections()
     connect(m_armWidget1, &ArmWidget::velocityChanged, this, &MainWindow::onArm1VelocityChanged);
     connect(m_armWidget1, &ArmWidget::relativePositionChanged, this, &MainWindow::onArm1RelaPosChanged);
     connect(m_armWidget1, &ArmWidget::absolutePositionChanged, this, &MainWindow::onArm1AbsPosChanged);
+    connect(m_armWidget1, &ArmWidget::digitalOutputChanged, m_udpManager, &UdpManager::sendDigitalOutput);
     connect(m_armWidget1, &ArmWidget::fsaShutdownClicked, this, &MainWindow::onGlobalShutdown);
     connect(m_armWidget1, &ArmWidget::fsaSwitchOnClicked, this, &MainWindow::onGlobalSwitchOn);
     connect(m_armWidget1, &ArmWidget::fsaEnableOpClicked, this, &MainWindow::onGlobalEnableOp);
@@ -127,6 +130,7 @@ void MainWindow::setupConnections()
     connect(m_armWidget2, &ArmWidget::velocityChanged, this, &MainWindow::onArm2VelocityChanged);
     connect(m_armWidget2, &ArmWidget::relativePositionChanged, this, &MainWindow::onArm2RelaPosChanged);
     connect(m_armWidget2, &ArmWidget::absolutePositionChanged, this, &MainWindow::onArm2AbsPosChanged);
+    connect(m_armWidget2, &ArmWidget::digitalOutputChanged, m_udpManager, &UdpManager::sendDigitalOutput);
     connect(m_armWidget2, &ArmWidget::fsaShutdownClicked, this, &MainWindow::onGlobalShutdown);
     connect(m_armWidget2, &ArmWidget::fsaSwitchOnClicked, this, &MainWindow::onGlobalSwitchOn);
     connect(m_armWidget2, &ArmWidget::fsaEnableOpClicked, this, &MainWindow::onGlobalEnableOp);
@@ -308,11 +312,36 @@ void MainWindow::onPacketReceived(const QByteArray &data, const QString &fromAdd
         return;
     }
 
-    const MountProtocol::SuprRMsg *msg =
-        reinterpret_cast<const MountProtocol::SuprRMsg *>(data.constData());
+    const MountProtocol::SuprResponseMsg *msg =
+        reinterpret_cast<const MountProtocol::SuprResponseMsg *>(data.constData());
 
-    // 心跳包回复不打印日志，避免刷屏
     if (msg->mCmd == MountProtocol::CMD_HEARTBEAT) {
+        return;
+    }
+
+    if (msg->mCmd == MountProtocol::MSG_ID_MASTER_TELEMETRY) {
+        const int payloadOffset = sizeof(MountProtocol::SuprResponseMsg);
+        if (msg->mDataLength != sizeof(MountProtocol::MasterTelemetry) ||
+            data.size() < payloadOffset + msg->mDataLength) {
+            m_logWidget->appendLog("遥测包长度无效", 2);
+            return;
+        }
+
+        MountProtocol::MasterTelemetry telemetry;
+        memcpy(&telemetry, data.constData() + payloadOffset, sizeof(telemetry));
+        if (telemetry.magic != MountProtocol::TELEMETRY_MAGIC ||
+            telemetry.version != 1 || telemetry.size != sizeof(telemetry)) {
+            m_logWidget->appendLog("遥测包版本或校验标记无效", 2);
+            return;
+        }
+
+        m_armWidget1->updateTelemetry(telemetry);
+        m_armWidget2->updateTelemetry(telemetry);
+        statusBar()->showMessage(QString("主站 AL=0x%1 | Domain WC=%2 | 臂电机数 %3 / %4")
+            .arg(telemetry.masterAlState, 2, 16, QChar('0'))
+            .arg(telemetry.domainWc)
+            .arg(telemetry.motorCount[0])
+            .arg(telemetry.motorCount[1]));
         return;
     }
 

@@ -77,6 +77,7 @@ public:
     void sendHandVelMm(const QVector<float> &arm1Vel, const QVector<float> &arm2Vel);
     void sendHandRelaPosMm(const QVector<float> &arm1Pos, const QVector<float> &arm2Pos);
     void sendHandAbsPosM(const QVector<float> &arm1Pos, const QVector<float> &arm2Pos);
+    void sendDigitalOutput(int armIndex, int channel, bool enabled);
 
 signals:
     void connectedChanged(bool connected);

@@ -37,7 +37,7 @@
       <item row="0" column="2">
        <widget class="QLabel" name="label_3">
         <property name="text">
-         <string>实际速度</string>
+         <string>实际速度(606C原始值)</string>
         </property>
        </widget>
       </item>
@@ -295,7 +295,7 @@
       <item row="0" column="0">
        <widget class="QLabel" name="label_5">
         <property name="text">
-         <string>目标速度</string>
+         <string>目标速度 (deg/s, ±10)</string>
         </property>
        </widget>
       </item>
@@ -305,10 +305,10 @@
          <number>2</number>
         </property>
         <property name="minimum">
-         <double>-99999.000000000000000</double>
+         <double>-10.000000000000000</double>
         </property>
         <property name="maximum">
-         <double>99999.000000000000000</double>
+         <double>10.000000000000000</double>
         </property>
        </widget>
       </item>
@@ -318,10 +318,10 @@
          <number>2</number>
         </property>
         <property name="minimum">
-         <double>-99999.000000000000000</double>
+         <double>-10.000000000000000</double>
         </property>
         <property name="maximum">
-         <double>99999.000000000000000</double>
+         <double>10.000000000000000</double>
         </property>
        </widget>
       </item>
@@ -331,10 +331,10 @@
          <number>2</number>
         </property>
         <property name="minimum">
-         <double>-99999.000000000000000</double>
+         <double>-10.000000000000000</double>
         </property>
         <property name="maximum">
-         <double>99999.000000000000000</double>
+         <double>10.000000000000000</double>
         </property>
        </widget>
       </item>
@@ -344,10 +344,10 @@
          <number>2</number>
         </property>
         <property name="minimum">
-         <double>-99999.000000000000000</double>
+         <double>-10.000000000000000</double>
         </property>
         <property name="maximum">
-         <double>99999.000000000000000</double>
+         <double>10.000000000000000</double>
         </property>
        </widget>
       </item>
@@ -357,10 +357,10 @@
          <number>2</number>
         </property>
         <property name="minimum">
-         <double>-99999.000000000000000</double>
+         <double>-10.000000000000000</double>
         </property>
         <property name="maximum">
-         <double>99999.000000000000000</double>
+         <double>10.000000000000000</double>
         </property>
        </widget>
       </item>
@@ -370,10 +370,10 @@
          <number>2</number>
         </property>
         <property name="minimum">
-         <double>-99999.000000000000000</double>
+         <double>-10.000000000000000</double>
         </property>
         <property name="maximum">
-         <double>99999.000000000000000</double>
+         <double>10.000000000000000</double>
         </property>
        </widget>
       </item>
@@ -556,6 +556,48 @@
         <property name="text">
          <string>Clear Error</string>
         </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupBoxIO">
+     <property name="title"><string>数字量控制与传感器监视</string></property>
+     <layout class="QVBoxLayout" name="verticalLayoutIO">
+      <item>
+       <widget class="QGroupBox" name="groupBoxDigitalOutputs">
+        <property name="title"><string>EL2809 继电器 / 抱闸输出（16 路）</string></property>
+        <layout class="QGridLayout" name="gridLayoutDigitalOutputs">
+         <item row="0" column="0"><widget class="QPushButton" name="buttonOutput0"><property name="text"><string>1: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="0" column="1"><widget class="QPushButton" name="buttonOutput1"><property name="text"><string>2: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="0" column="2"><widget class="QPushButton" name="buttonOutput2"><property name="text"><string>3: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="0" column="3"><widget class="QPushButton" name="buttonOutput3"><property name="text"><string>4: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="0" column="4"><widget class="QPushButton" name="buttonOutput4"><property name="text"><string>5: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="0" column="5"><widget class="QPushButton" name="buttonOutput5"><property name="text"><string>6: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="0" column="6"><widget class="QPushButton" name="buttonOutput6"><property name="text"><string>7: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="0" column="7"><widget class="QPushButton" name="buttonOutput7"><property name="text"><string>8: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="1" column="0"><widget class="QPushButton" name="buttonOutput8"><property name="text"><string>9: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="1" column="1"><widget class="QPushButton" name="buttonOutput9"><property name="text"><string>10: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="1" column="2"><widget class="QPushButton" name="buttonOutput10"><property name="text"><string>11: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="1" column="3"><widget class="QPushButton" name="buttonOutput11"><property name="text"><string>12: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="1" column="4"><widget class="QPushButton" name="buttonOutput12"><property name="text"><string>13: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="1" column="5"><widget class="QPushButton" name="buttonOutput13"><property name="text"><string>14: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="1" column="6"><widget class="QPushButton" name="buttonOutput14"><property name="text"><string>15: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+         <item row="1" column="7"><widget class="QPushButton" name="buttonOutput15"><property name="text"><string>16: OFF</string></property><property name="checkable"><bool>true</bool></property></widget></item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="groupBoxSensors">
+        <property name="title"><string>EL6022 RS485 传感器（原始帧）</string></property>
+        <layout class="QGridLayout" name="gridLayoutSensors">
+         <item row="0" column="0"><widget class="QLabel" name="labelEncoderPort"><property name="text"><string>端口 1：编码器 1–3</string></property></widget></item>
+         <item row="0" column="1"><widget class="QLabel" name="labelPressurePort"><property name="text"><string>端口 2：压力变送器 1–3、拉线传感器</string></property></widget></item>
+         <item row="1" column="0" colspan="2"><widget class="QLabel" name="labelSerialStatus0"><property name="text"><string>状态: --  数据: --</string></property><property name="textInteractionFlags"><set>Qt::TextSelectableByMouse</set></property></widget></item>
+         <item row="2" column="0" colspan="2"><widget class="QLabel" name="labelSerialStatus1"><property name="text"><string>状态: --  数据: --</string></property><property name="textInteractionFlags"><set>Qt::TextSelectableByMouse</set></property></widget></item>
+         <item row="3" column="0" colspan="2"><widget class="QLabel" name="labelSensorValues"><property name="text"><string>传感器：等待有效 Modbus 数据</string></property><property name="textInteractionFlags"><set>Qt::TextSelectableByMouse</set></property></widget></item>
+        </layout>
        </widget>
       </item>
      </layout>

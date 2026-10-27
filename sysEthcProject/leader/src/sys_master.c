@@ -603,6 +603,7 @@ static int  scanSlaves(ARMS_MASTER_THREAD_INFO *pTModule)
 
       fclose(fp);          
   }
+  
   for (int i = 0; i < slavesize; i++)
   {
     ec_slave_info_t slave_in;

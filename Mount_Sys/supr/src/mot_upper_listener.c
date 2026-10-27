@@ -13,6 +13,8 @@
 #include <stdint.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <string.h>
+#include <stddef.h>
 
 #include "mot_upper_listener.h"
 #include "mot_share_messages.h"
@@ -307,6 +309,13 @@ static void LoopRecUpperMsg()
           break;
         }
 
+        case CMD_EL2809_OUTPUT:
+        {
+          if (mMsg->mDataLength == sizeof(EL2809_OUTPUT_CMD))
+            sendArmsMasterDataMsg(mMsg->mCmd,0,0,(char*)mMsg,recSize);
+          break;
+        }
+
         case CMD_HAND_VEL_MM:
         case CMD_HAND_RELA_POS_MM:
         case CMD_HAND_ABS_POS_M:
@@ -332,19 +341,26 @@ static void LoopRecLocalMsg()
 {
     char mLocalData[Msg_T_S];
 
-    while(recvfrom(mLocalSoket, mLocalData, Msg_T_S, 0, (struct sockaddr*)&(mLocalPeerAddr), &localNum)>0)
+    ssize_t recvSize;
+    while((recvSize = recvfrom(mLocalSoket, mLocalData, Msg_T_S, 0,
+                              (struct sockaddr*)&(mLocalPeerAddr), &localNum)) > 0)
     {
       MsgHeader *mMsg = (MsgHeader *)mLocalData;
-
-      switch (mMsg->mMsgId)
-      {
-       
-        default:
-        {
-          break;
-        }
-      } //end switch
-
+      if (mMsg->mMsgId == MSG_ID_MASTER_TELEMETRY &&
+          recvSize >= (ssize_t)(offsetof(MsgLongMsg, mData) + sizeof(MASTER_TELEMETRY))) {
+        MsgLongMsg *localMsg = (MsgLongMsg *)mLocalData;
+        MASTER_TELEMETRY telemetry;
+        memcpy(&telemetry, localMsg->mData, sizeof(telemetry));
+        SUPR_R_MSG upperMsg;
+        memset(&upperMsg, 0, sizeof(upperMsg));
+        upperMsg.mCmd = MSG_ID_MASTER_TELEMETRY;
+        upperMsg.mFrameId = 0;
+        upperMsg.mDataLength = sizeof(telemetry);
+        memcpy(mLocalData, &upperMsg, sizeof(upperMsg));
+        memcpy(mLocalData + sizeof(upperMsg), &telemetry, sizeof(telemetry));
+        sendto(mRecUpperSoket, mLocalData, sizeof(upperMsg) + sizeof(MASTER_TELEMETRY), 0,
+               (struct sockaddr *)&mUpperPeerAddr, upperNum);
+      }
     }
 }
 

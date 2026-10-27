@@ -7,8 +7,12 @@
 #ifndef ARMWIDGET_H
 #define ARMWIDGET_H
 
+#include "protocol.h"
+
 #include <QWidget>
 #include <QVector>
+#include <QLabel>
+#include <QPushButton>
 
 namespace Ui {
 class ArmWidget;
@@ -34,6 +38,7 @@ public:
 
     // 更新电机状态显示（预留接口）
     void updateMotorStatus(int motorIndex, float actualPos, float actualVel, uint16_t statusWord);
+    void updateTelemetry(const MountProtocol::MasterTelemetry &telemetry);
 
     // 紧急停止：所有值归零并发送信号
     void emergencyStop();
@@ -47,6 +52,7 @@ signals:
     void fsaEnableOpClicked();
     void fsaHaltClicked();
     void clearErrorClicked();
+    void digitalOutputChanged(int armIndex, int channel, bool enabled);
 
 private slots:
     void onBtnSendVelocity();
@@ -62,6 +68,8 @@ private:
 
     Ui::ArmWidget *ui;
     int m_armIndex;
+    QVector<QPushButton *> m_outputButtons;
+    QVector<QLabel *> m_sensorLabels;
 };
 
 } // namespace MountShow

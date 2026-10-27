@@ -17,6 +17,11 @@ namespace MountProtocol {
 static constexpr int MSG_HEADER_SIZE = 28;
 static constexpr int MSG_LONG_DATA_SIZE = 2048;
 static constexpr int MAX_MODULE_COUNT = 8;
+static constexpr int32_t MSG_ID_MASTER_TELEMETRY = 50;
+static constexpr uint32_t TELEMETRY_MAGIC = 0x4D544C59u;
+static constexpr int TELEMETRY_MAX_MOTORS = 6;
+static constexpr int TELEMETRY_SERIAL_BYTES = 22;
+static constexpr int TELEMETRY_SENSOR_COUNT = 7;
 
 // 命令ID
 enum CmdId : int32_t {
@@ -39,8 +44,26 @@ enum CmdId : int32_t {
     CMD_IGH_CLEAR_ERROR      = 118,
 
     CMD_DESTROY_MASTER       = 119,
-    CMD_MASTER_OP_KEYDOWN    = 120
+    CMD_MASTER_OP_KEYDOWN    = 120,
+    CMD_EL2809_OUTPUT        = 121
 };
+
+struct El2809OutputCmd {
+    uint8_t armIndex;
+    uint8_t channel;
+    uint8_t enabled;
+    uint8_t reserved;
+};
+
+#pragma pack(push, 1)
+struct SuprResponseMsg {
+    int32_t mCmd;
+    int32_t mFrameId;
+    uint8_t mModuleFlag[MAX_MODULE_COUNT];
+    uint16_t mDataLength;
+    uint16_t mCRC;
+};
+#pragma pack(pop)
 
 // 模块ID
 enum ModuleId : int32_t {
@@ -63,7 +86,32 @@ struct SuprRMsg {
     uint8_t   mModuleFlag[MAX_MODULE_COUNT];
     uint16_t  mDataLength;
     uint16_t  mCRC;
-    // mData 是柔性数组，实际发送时紧跟在结构体后面
+};
+
+struct TelemetryMotor {
+    uint16_t statusWord;
+    int32_t position;
+    int32_t velocity;
+    int16_t torque;
+    uint16_t errorCode;
+};
+
+struct MasterTelemetry {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t size;
+    uint8_t armCount;
+    uint8_t motorCount[ARM_COUNT];
+    uint8_t reserved;
+    uint32_t masterAlState;
+    uint16_t domainWc;
+    uint16_t reserved2;
+    TelemetryMotor motor[ARM_COUNT][TELEMETRY_MAX_MOTORS];
+    uint8_t el2809[ARM_COUNT][16];
+    uint16_t el6022Status[ARM_COUNT][2];
+    uint8_t el6022Data[ARM_COUNT][2][TELEMETRY_SERIAL_BYTES];
+    int32_t sensorValue[ARM_COUNT][TELEMETRY_SENSOR_COUNT];
+    uint8_t sensorValid[ARM_COUNT][TELEMETRY_SENSOR_COUNT];
 };
 #pragma pack(pop)
 
@@ -95,6 +143,7 @@ public:
     static QByteArray buildHandRelaPosMm(const QVector<float> &arm1Pos, const QVector<float> &arm2Pos);
     static QByteArray buildHandAbsPosM(const QVector<float> &arm1Pos, const QVector<float> &arm2Pos);
     static QByteArray buildMasterOpKeydown(int32_t keyCode);
+    static QByteArray buildEl2809Output(int armIndex, int channel, bool enabled);
 
 private:
     static QByteArray buildBaseCmd(int32_t cmdId, const QByteArray &data = QByteArray());

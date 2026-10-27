@@ -276,6 +276,11 @@ void UdpManager::sendHandAbsPosM(const QVector<float> &arm1Pos, const QVector<fl
     sendCommand(MountProtocol::ProtocolBuilder::buildHandAbsPosM(arm1Pos, arm2Pos));
 }
 
+void UdpManager::sendDigitalOutput(int armIndex, int channel, bool enabled)
+{
+    sendCommand(MountProtocol::ProtocolBuilder::buildEl2809Output(armIndex, channel, enabled));
+}
+
 void UdpManager::onHeartbeat()
 {
     if (!m_connected) {

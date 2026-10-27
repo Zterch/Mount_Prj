@@ -4,8 +4,8 @@ cmake_minimum_required(VERSION 3.16)
 set(PROJECT_NAME leader)
 
 # 设置 EtherCAT 路径
-set(ETHERCAT_INCLUDE_DIR "/usr/local/ethercat/include")
-set(ETHERCAT_LIBRARY_DIR "/usr/local/ethercat/lib")
+set(ETHERCAT_INCLUDE_DIR "/usr/local/etherlab/include")
+set(ETHERCAT_LIBRARY_DIR "/usr/local/etherlab/lib")
 
 # 检查路径是否存在
 if(NOT EXISTS ${ETHERCAT_INCLUDE_DIR})
@@ -31,7 +31,7 @@ endif()
 include_directories(
     include
     ../share
-    /opt/etherlab/include
+    /usr/local/etherlab/include
     ${ETHERCAT_INCLUDE_DIR}
 )
 
@@ -57,7 +57,7 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 # 链接库 - 注意顺序很重要
 target_link_libraries(${PROJECT_NAME}
     #${ETHERCAT_LIB}  # 使用 find_library 找到的库
-    -L/opt/etherlab/lib
+    -L/usr/local/etherlab/lib
     -lethercat
     -lpthread
     -lrt

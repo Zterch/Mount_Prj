@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#include <stddef.h>
 
 #include "mot_share_ipc.h"
 #include "mot_share_messages.h"
@@ -121,15 +122,17 @@ int32_t MsgSendLongMsg(const int32_t mSenderSoket, const int mRecerPort, const i
 {
   int32_t iRet = 0;
   MsgLongMsg mMsg;
+  memset(&mMsg, 0, sizeof(mMsg));
   mMsg.mSender = mSender;
   mMsg.mRecer  = mRecer;
   mMsg.mMsgId  = mMsgId;
   mMsg.mNotice  = mNotice;
   mMsg.mValue1  = mValue;
 
-  if(mDSize>0 && NULL != mShortData)
+  if(mDSize > 0 && NULL != mShortData)
     memcpy(mMsg.mData, mShortData, mDSize);
 
-  iRet = MsgMgrSendMsg(mSenderSoket, mRecerPort, (char*)&mMsg, sizeof(MsgLongMsg));
+  iRet = MsgMgrSendMsg(mSenderSoket, mRecerPort,
+                       (char*)&mMsg, offsetof(MsgLongMsg, mData) + mDSize);
   return  iRet;
 }

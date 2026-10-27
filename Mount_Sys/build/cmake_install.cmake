@@ -1,4 +1,4 @@
-# Install script for directory: /home/zterch/VS_Project/Mount_Prj/Mount_Sys
+# Install script for directory: /home/user/VS_Project/Mount_Prj/Mount_Sys
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -37,14 +37,19 @@ if(NOT DEFINED CMAKE_CROSSCOMPILING)
   set(CMAKE_CROSSCOMPILING "FALSE")
 endif()
 
-if(NOT CMAKE_INSTALL_LOCAL_ONLY)
-  # Include the install script for the subdirectory.
-  include("/home/zterch/VS_Project/Mount_Prj/Mount_Sys/build/supr/cmake_install.cmake")
+# Set default install directory permissions.
+if(NOT DEFINED CMAKE_OBJDUMP)
+  set(CMAKE_OBJDUMP "/usr/bin/objdump")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("/home/zterch/VS_Project/Mount_Prj/Mount_Sys/build/leader/cmake_install.cmake")
+  include("/home/user/VS_Project/Mount_Prj/Mount_Sys/build/supr/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
+  include("/home/user/VS_Project/Mount_Prj/Mount_Sys/build/leader/cmake_install.cmake")
 endif()
 
 if(CMAKE_INSTALL_COMPONENT)
@@ -55,5 +60,5 @@ endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-file(WRITE "/home/zterch/VS_Project/Mount_Prj/Mount_Sys/build/${CMAKE_INSTALL_MANIFEST}"
+file(WRITE "/home/user/VS_Project/Mount_Prj/Mount_Sys/build/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")

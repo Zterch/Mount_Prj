@@ -109,7 +109,7 @@ QByteArray ProtocolBuilder::buildDestroyMaster()
 
 QByteArray ProtocolBuilder::buildStartOp()
 {
-    return buildBaseCmd(CMD_IGH_START_OP);
+    return buildMasterOpKeydown(0);
 }
 
 QByteArray ProtocolBuilder::buildFsaShutdown()
@@ -193,6 +193,16 @@ QByteArray ProtocolBuilder::buildMasterOpKeydown(int32_t keyCode)
     QByteArray data;
     data.append(reinterpret_cast<const char*>(&keyCode), sizeof(int32_t));
     return buildBaseCmd(CMD_MASTER_OP_KEYDOWN, data);
+}
+
+QByteArray ProtocolBuilder::buildEl2809Output(int armIndex, int channel, bool enabled)
+{
+    El2809OutputCmd command = {};
+    command.armIndex = static_cast<uint8_t>(armIndex);
+    command.channel = static_cast<uint8_t>(channel);
+    command.enabled = enabled ? 1 : 0;
+    QByteArray data(reinterpret_cast<const char *>(&command), sizeof(command));
+    return buildBaseCmd(CMD_EL2809_OUTPUT, data);
 }
 
 } // namespace MountProtocol

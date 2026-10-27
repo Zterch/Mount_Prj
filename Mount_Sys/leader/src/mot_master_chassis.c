@@ -350,11 +350,11 @@ static int confChassisSlavesPdos(CHASSIS_MASTER_THREAD_INFO *pTModule)
             {
                 //配置域
                 pTModule->nimotion_pdos[motorIndex].ctrl_word = ecrt_slave_config_reg_pdo_entry(sc,0x6040, 0, pTModule->domain1, NULL);
-                pTModule->nimotion_pdos[motorIndex].operation_mode = ecrt_slave_config_reg_pdo_entry(sc,0x6060, 0, pTModule->domain1, NULL);
-                pTModule->nimotion_pdos[motorIndex].Target_position = ecrt_slave_config_reg_pdo_entry(sc,0x607A, 0, pTModule->domain1, NULL);
+                //pTModule->nimotion_pdos[motorIndex].operation_mode = ecrt_slave_config_reg_pdo_entry(sc,0x6060, 0, pTModule->domain1, NULL);
+                pTModule->nimotion_pdos[motorIndex].target_position = ecrt_slave_config_reg_pdo_entry(sc,0x607A, 0, pTModule->domain1, NULL);
                 pTModule->nimotion_pdos[motorIndex].target_velocity = ecrt_slave_config_reg_pdo_entry(sc,0x60FF, 0, pTModule->domain1, NULL);
                 pTModule->nimotion_pdos[motorIndex].status_word = ecrt_slave_config_reg_pdo_entry(sc,0x6041, 0, pTModule->domain1, NULL);
-                pTModule->nimotion_pdos[motorIndex].mode_display = ecrt_slave_config_reg_pdo_entry(sc,0x6061, 0, pTModule->domain1, NULL);
+                //pTModule->nimotion_pdos[motorIndex].mode_display = ecrt_slave_config_reg_pdo_entry(sc,0x6061, 0, pTModule->domain1, NULL);
                 pTModule->nimotion_pdos[motorIndex].Position_value = ecrt_slave_config_reg_pdo_entry(sc,0x6064, 0, pTModule->domain1, NULL);
                 pTModule->nimotion_pdos[motorIndex].velocity_value = ecrt_slave_config_reg_pdo_entry(sc,0x606c, 0, pTModule->domain1, NULL);
             }
