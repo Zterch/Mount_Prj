@@ -269,6 +269,28 @@ static int32_t initMaster(ARMS_MASTER_THREAD_INFO *pTModule) {
 //   memset(pTModule->upper_target_v_Flag,0,sizeof(uint8_t)*MASTER_ARMS_MAX_SIZE);
 //   memset(pTModule->upper_target_p_Kp_cnt,0,sizeof(int32_t)*MASTER_ARMS_MAX_SIZE);
 
+  for (int arm = 0; arm < MASTER_ARMS_MAX_SIZE; ++arm) {
+      // 通道 0 (Port 0)：3个角度编码器，地址 1, 2, 3，读 0x0014 起 2个寄存器，周期 30ms
+      pTModule->el6022_sensor_cfg[arm][0][0][0] = 1; pTModule->el6022_sensor_cfg[arm][0][0][1] = 0x0014; pTModule->el6022_sensor_cfg[arm][0][0][2] = 2; pTModule->el6022_sensor_cfg[arm][0][0][3] = 30;
+      pTModule->el6022_sensor_cfg[arm][0][1][0] = 2; pTModule->el6022_sensor_cfg[arm][0][1][1] = 0x0014; pTModule->el6022_sensor_cfg[arm][0][1][2] = 2; pTModule->el6022_sensor_cfg[arm][0][1][3] = 30;
+      pTModule->el6022_sensor_cfg[arm][0][2][0] = 3; pTModule->el6022_sensor_cfg[arm][0][2][1] = 0x0014; pTModule->el6022_sensor_cfg[arm][0][2][2] = 2; pTModule->el6022_sensor_cfg[arm][0][2][3] = 30;
+
+      // 通道 1 (Port 1)：3个压力 + 1个拉线，地址 1, 2, 3, 4，读 0x0014 起 2个寄存器，周期 100ms
+      pTModule->el6022_sensor_cfg[arm][1][0][0] = 1; pTModule->el6022_sensor_cfg[arm][1][0][1] = 0x0014; pTModule->el6022_sensor_cfg[arm][1][0][2] = 2; pTModule->el6022_sensor_cfg[arm][1][0][3] = 100;
+      pTModule->el6022_sensor_cfg[arm][1][1][0] = 2; pTModule->el6022_sensor_cfg[arm][1][1][1] = 0x0014; pTModule->el6022_sensor_cfg[arm][1][1][2] = 2; pTModule->el6022_sensor_cfg[arm][1][1][3] = 100;
+      pTModule->el6022_sensor_cfg[arm][1][2][0] = 3; pTModule->el6022_sensor_cfg[arm][1][2][1] = 0x0014; pTModule->el6022_sensor_cfg[arm][1][2][2] = 2; pTModule->el6022_sensor_cfg[arm][1][2][3] = 100;
+      pTModule->el6022_sensor_cfg[arm][1][3][0] = 4; pTModule->el6022_sensor_cfg[arm][1][3][1] = 0x0014; pTModule->el6022_sensor_cfg[arm][1][3][2] = 2; pTModule->el6022_sensor_cfg[arm][1][3][3] = 100;
+      
+      // 初始化状态机
+      for (int port = 0; port < 2; ++port) {
+          pTModule->el6022_state[arm][port] = EL6022_ST_INIT;
+          pTModule->el6022_inited[arm][port] = 0;
+          pTModule->el6022_sensor_index[arm][port] = 0;
+          pTModule->el6022_next_poll_ms[arm][port] = 0;
+      }
+  }
+
+
   return iRet;
 }
 
@@ -625,6 +647,7 @@ static void upperAngularVelSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MS
     memset(pTModule->upper_target_p_Flag, 0, sizeof(uint8_t) * MASTER_ARMS_MAX_SIZE);
     for (int i = 0; i < pTModule->armsSize; ++i) {
         if (mSMsg->mModuleFlag[i]) {
+            pTModule->upper_target_p_Flag[i] = 0;
             const float *armVel = pVel + i * ARM_MOTOR_COUNT;
             handleStartSlight(pTModule, i, armVel[0], armVel[1], armVel[2],
                               armVel[3], armVel[4], armVel[5], CSV_ACC_DEG_PER_SEC2);
@@ -634,51 +657,64 @@ static void upperAngularVelSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MS
 
 static void upperRelaPosSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *mSMsg)
 {
-    if (mSMsg->mDataLength < sizeof(float) * ARM_MOTOR_COUNT * MASTER_ARMS_MAX_SIZE)
+    const size_t expected = sizeof(float) * ARM_MOTOR_COUNT * MASTER_ARMS_MAX_SIZE;
+    if (mSMsg->mDataLength != expected)
         return;
-    for (int i = 0; i < pTModule->armsSize; i++)
-    {
-        if(mSMsg->mModuleFlag[i])
-        {
-            float *pRpos = (float*)mSMsg->mData + i * ARM_MOTOR_COUNT;
-            for (int j = 0; j < pTModule->arm_motor_count[i]; ++j)
-                pTModule->upper_target_pos[i][j] = pTModule->motors[i][j].Position_value + pRpos[j];
-            
-            for (int j = 0; j < pTModule->arm_motor_count[i]; j++)
-            {
-                for (int k = 0; k < upper_pos_smooth_cnt; k++)
-                {
-                    pTModule->upper_pos_vel_smooth[i][j][k] = 0;
-                } 
-                pTModule->target_p_last_cmdvel[i][j] = 0;
+    const float *positions = (const float *)mSMsg->mData;
+    for (int arm = 0; arm < pTModule->armsSize; ++arm) {
+        if (!mSMsg->mModuleFlag[arm])
+            continue;
+        const float *arm_positions = positions + arm * ARM_MOTOR_COUNT;
+        for (int motor = 0; motor < pTModule->arm_motor_count[arm]; ++motor) {
+            if (!isfinite(arm_positions[motor]) || fabsf(arm_positions[motor]) > 5.0f) {
+                fprintf(stderr, "Rejected relative position: arm=%d motor=%d value=%g deg; allowed +/-5 deg\n",
+                        arm, motor, arm_positions[motor]);
+                return;
             }
-            pTModule->upper_target_p_Flag[i] = 1;
-            pTModule->upper_target_p_Kp_cnt[i] = 0;
         }
+    }
+    for (int arm = 0; arm < pTModule->armsSize; ++arm) {
+        if (!mSMsg->mModuleFlag[arm])
+            continue;
+        const float *arm_positions = positions + arm * ARM_MOTOR_COUNT;
+        for (int motor = 0; motor < pTModule->arm_motor_count[arm]; ++motor) {
+            float actual_deg = pTModule->motors[arm][motor].Position_value / (float)CSV_COUNTS_PER_DEG;
+            pTModule->upper_target_pos[arm][motor] = actual_deg + arm_positions[motor];
+            pTModule->target_p_last_cmdvel[arm][motor] = 0.0f;
+        }
+        pTModule->upper_target_v_Flag[arm] = 0;
+        pTModule->upper_target_p_Flag[arm] = 1;
     }
 }
 
 static void upperAbsPosSomanets(ARMS_MASTER_THREAD_INFO *pTModule, SUPR_R_MSG *mSMsg)
 {
-    if (mSMsg->mDataLength < sizeof(float) * ARM_MOTOR_COUNT * MASTER_ARMS_MAX_SIZE)
+    const size_t expected = sizeof(float) * ARM_MOTOR_COUNT * MASTER_ARMS_MAX_SIZE;
+    if (mSMsg->mDataLength != expected)
         return;
-    for (int i = 0; i < pTModule->armsSize; i++)
-    {
-        if(mSMsg->mModuleFlag[i])
-        {
-            float *pRpos = (float*)mSMsg->mData + i * ARM_MOTOR_COUNT;
-            for (int j = 0; j < pTModule->arm_motor_count[i]; j++)
-            {
-                pTModule->upper_target_pos[i][j] = pRpos[j];
-                for (int k = 0; k < upper_pos_smooth_cnt; k++)
-                {
-                    pTModule->upper_pos_vel_smooth[i][j][k] = 0;
-                } 
-                pTModule->target_p_last_cmdvel[i][j] = 0;
+    const float *positions = (const float *)mSMsg->mData;
+    for (int arm = 0; arm < pTModule->armsSize; ++arm) {
+        if (!mSMsg->mModuleFlag[arm])
+            continue;
+        const float *arm_positions = positions + arm * ARM_MOTOR_COUNT;
+        for (int motor = 0; motor < pTModule->arm_motor_count[arm]; ++motor) {
+            float actual_deg = pTModule->motors[arm][motor].Position_value / (float)CSV_COUNTS_PER_DEG;
+            if (!isfinite(arm_positions[motor]) || fabsf(arm_positions[motor] - actual_deg) > 5.0f) {
+                fprintf(stderr, "Rejected absolute position: arm=%d motor=%d target=%g deg actual=%g deg; move limit +/-5 deg\n",
+                        arm, motor, arm_positions[motor], actual_deg);
+                return;
             }
-            pTModule->upper_target_p_Flag[i] = 1;
-            pTModule->upper_target_p_Kp_cnt[i] = 0;
         }
+    }
+    for (int arm = 0; arm < pTModule->armsSize; ++arm) {
+        if (!mSMsg->mModuleFlag[arm])
+            continue;
+        const float *arm_positions = positions + arm * ARM_MOTOR_COUNT;
+        for (int motor = 0; motor < pTModule->arm_motor_count[arm]; ++motor) {
+            pTModule->upper_target_pos[arm][motor] = arm_positions[motor];
+            pTModule->target_p_last_cmdvel[arm][motor] = 0.0f;
+        }
+        pTModule->upper_target_p_Flag[arm] = 1;
     }
 }
 
@@ -892,9 +928,6 @@ static void confEL6022Pdos(ARMS_MASTER_THREAD_INFO *pTModule,ec_slave_info_t *in
     if (ecrt_slave_config_pdos(sc, EC_END, slave_el6022_syncs))
     {
         printf("Failed to configure EL6022 PDOs!\n");
-        for (int port = 0; port < 2; ++port)
-            for (int item = 0; item < 8; ++item)
-                pTModule->EL6022[EK1100Index][port][item] = -1;
         return;
     }
     else
@@ -904,30 +937,23 @@ static void confEL6022Pdos(ARMS_MASTER_THREAD_INFO *pTModule,ec_slave_info_t *in
 
     // 注册偏移量
     for (int port = 0; port < 2; ++port) {
-        uint16_t txIndex = port ? 0x7010 : 0x7000;
-        uint16_t txCtrl = port ? 0x7011 : 0x7001;
-        uint16_t rxIndex = port ? 0x6010 : 0x6000;
-        uint16_t rxCtrl = port ? 0x6011 : 0x6001;
-        int outputBase = ecrt_slave_config_reg_pdo_entry(sc, txCtrl, 0x01, pTModule->domain1, NULL);
-        int outputStatus = ecrt_slave_config_reg_pdo_entry(sc, rxCtrl, 0x01, pTModule->domain1, NULL);
-        /* These maps contain a packed 16-bit control/status word, not
-         * separately registered length bytes. Disable polling until that
-         * layout is handled; absolute domain offsets 8/16 corrupt other PDOs. */
-        int outputLength = -2;
-        int inputLength = -2;
-        int dataOut = ecrt_slave_config_reg_pdo_entry(sc, txIndex, 0x11, pTModule->domain1, NULL);
-        int dataIn = ecrt_slave_config_reg_pdo_entry(sc, rxIndex, 0x11, pTModule->domain1, NULL);
-        pTModule->EL6022[EK1100Index][port][0] = outputBase;
-        pTModule->EL6022[EK1100Index][port][1] = outputLength;
-        pTModule->EL6022[EK1100Index][port][2] = dataOut;
-        pTModule->EL6022[EK1100Index][port][3] = outputStatus;
-        pTModule->EL6022[EK1100Index][port][4] = inputLength;
-        pTModule->EL6022[EK1100Index][port][5] = dataIn;
-        pTModule->EL6022[EK1100Index][port][6] = outputStatus < 0 ? outputStatus : outputStatus + 2;
-        pTModule->EL6022[EK1100Index][port][7] = outputBase < 0 ? outputBase : outputBase + 2;
-        printf("EL6022 arm=%d port=%d tx=%d len=%d data=%d rx=%d len=%d data=%d\\n",
-               EK1100Index, port, outputBase, outputLength, dataOut,
-               outputStatus, inputLength, dataIn);
+        uint16_t txCtrl  = port ? 0x7011 : 0x7001;
+        uint16_t txIndex = port ? 0x7010 : 0x7000; // 注意这里改成了 txIndex
+        uint16_t rxCtrl  = port ? 0x6011 : 0x6001;
+        uint16_t rxIndex = port ? 0x6010 : 0x6000; // 注意这里改成了 rxIndex
+        int offTxCtrl = ecrt_slave_config_reg_pdo_entry(sc, txCtrl, 0x01, pTModule->domain1, NULL);
+        int offRxCtrl = ecrt_slave_config_reg_pdo_entry(sc, rxCtrl, 0x01, pTModule->domain1, NULL);
+        int offTxData = ecrt_slave_config_reg_pdo_entry(sc, txIndex, 0x11, pTModule->domain1, NULL); // 这里用 txIndex
+        int offRxData = ecrt_slave_config_reg_pdo_entry(sc, rxIndex, 0x11, pTModule->domain1, NULL); // 这里用 rxIndex
+
+        // 只存 4 个偏移，去掉没用的 Length
+        pTModule->EL6022[EK1100Index][port][0] = offTxCtrl;
+        pTModule->EL6022[EK1100Index][port][1] = offTxData;
+        pTModule->EL6022[EK1100Index][port][2] = offRxCtrl;
+        pTModule->EL6022[EK1100Index][port][3] = offRxData;
+
+        printf("EL6022 arm=%d port=%d offsets (TxCtrl=%d, TxData=%d, RxCtrl=%d, RxData=%d)\n",
+               EK1100Index, port, offTxCtrl, offTxData, offRxCtrl, offRxData);
     }
     
 }
@@ -1198,14 +1224,12 @@ static void LoopRecLocalMsg(ARMS_MASTER_THREAD_INFO *pTModule)
         }
         case CMD_HAND_RELA_POS_MM:
         {
-            fprintf(stderr, "Position command: cyclic position controller is inactive; no position-to-velocity output generated\n");
             if (upperMsg)
                 upperRelaPosSomanets(pTModule, upperMsg);
             break;
         }
         case CMD_HAND_ABS_POS_M:
         {
-            fprintf(stderr, "Position command: cyclic position controller is inactive; no position-to-velocity output generated\n");
             if (upperMsg)
                 upperAbsPosSomanets(pTModule, upperMsg);
             break;
@@ -1314,16 +1338,74 @@ static void  cyc_vel_upper_cmd(ARMS_MASTER_THREAD_INFO *pTModule)
     
 }
 
-static void  cyc_pos_upper_cmd(ARMS_MASTER_THREAD_INFO *pTModule)
+static void cyc_pos_upper_cmd(ARMS_MASTER_THREAD_INFO *pTModule)
 {
-    /**
-     * 200HZ 运行周期
-     */
-    // for (int i = 0; i < MASTER_ARMS_MAX_SIZE; i++)
-    // {
-    //     if(pTModule->upper_target_p_Flag[i])
-    //     {
-    //         //V_cmd = Kp*(S_obj-S_now) + Kd(^S_obj-^S_now)
+    const float dt = 0.005f;
+    const float max_speed_deg_s = 2.0f;
+    const float max_acc_deg_s2 = 30.0f;
+    const float counts_per_deg = (float)CSV_COUNTS_PER_DEG;
+
+    for (int arm = 0; arm < pTModule->armsSize; ++arm) {
+        if (!pTModule->masterActivated || pTModule->arm_fsa[arm] != S_OP_OK) {
+            pTModule->upper_target_p_Flag[arm] = 0;
+            for (int motor = 0; motor < pTModule->arm_motor_count[arm]; ++motor)
+                pTModule->motors[arm][motor].target_velocity = 0;
+            continue;
+        }
+        if (!pTModule->upper_target_p_Flag[arm])
+            continue;
+
+        bool arrived = true;
+        for (int motor = 0; motor < pTModule->arm_motor_count[arm]; ++motor) {
+            float actual_deg = (float)pTModule->motors[arm][motor].Position_value / counts_per_deg;
+            float error_deg = pTModule->upper_target_pos[arm][motor] - actual_deg;
+            float current_deg_s = pTModule->target_p_last_cmdvel[arm][motor];
+            float desired_deg_s = fmaxf(-max_speed_deg_s,
+                                        fminf(max_speed_deg_s, error_deg * 2.0f));
+            float step = max_acc_deg_s2 * dt;
+            current_deg_s += fmaxf(-step, fminf(step, desired_deg_s - current_deg_s));
+
+            if (fabsf(error_deg) <= 0.02f && fabsf(current_deg_s) <= step) {
+                current_deg_s = 0.0f;
+            } else {
+                arrived = false;
+            }
+            pTModule->target_p_last_cmdvel[arm][motor] = current_deg_s;
+            pTModule->motors[arm][motor].target_velocity =
+                (int32_t)lrintf(current_deg_s * counts_per_deg);
+        }
+        if (arrived) {
+            pTModule->upper_target_p_Flag[arm] = 0;
+            printf("Position target reached: arm=%d\n", arm);
+        }
+    }
+}
+
+#if 0 /* obsolete duplicated position/FSA block */
+/*****************************************ethercat总线相关**************************************************/
+//获取当前系统时间
+static uint64_t system_time_ns(void)
+{
+    struct timespec  rt_time;
+    clock_gettime(CLOCK_MONOTONIC, &rt_time);
+    uint64_t time = TIMESPEC2NS(rt_time);
+    return time;
+}
+
+static int32_t armsFsa(ARMS_MASTER_THREAD_INFO *pTModule)
+{
+    int32_t iRet = 0;
+  
+    //有限状态机切换
+    for (int i = 0; i < pTModule->armsSize; i++)
+    {
+        // 如果该臂没有电机，跳过
+        if(pTModule->arm_motor_count[i] == 0) continue;
+        //4个伺服电机、EK1100 Ek1110 ...
+        // if(pTModule->slaves_inf[i].childSlaveSize>4)
+        // {
+            //写入4个电机的数据
+            switch (pTModule->arm_fsa[i])
     //         float cmdSpeed[4];
     //         float kp = ((float)pTModule->upper_target_p_Kp_cnt[i])/2.0;
     //         float kd = ((float)pTModule->upper_target_p_Kp_cnt[i])/20.0;
@@ -1419,6 +1501,8 @@ static void  cyc_pos_upper_cmd(ARMS_MASTER_THREAD_INFO *pTModule)
     //     }
     // }
 }
+
+#endif
 
 /*****************************************ethercat总线相关**************************************************/
 //获取当前系统时间
@@ -1631,9 +1715,6 @@ void* master_arms_threadEntry(void* pModule)
   pTModule->masterActivated=false;
   uint32_t pack_ms = 10;
 
-  //系统出错数据包的记录的北京时间
-  //time_t rawtime;
-  //struct tm *timeinfo;
   
   while(pTModule->mWorking)
   {
@@ -1727,84 +1808,135 @@ static void pollEL6022(ARMS_MASTER_THREAD_INFO *pTModule)
 {
     static uint32_t cycle = 0;
     cycle++;
-    uint32_t now = cycle;
 
-    for (int arm = 0; arm < pTModule->armsSize && arm < MASTER_TELEMETRY_MAX_ARMS; ++arm) {
+    for (int arm = 0; arm < pTModule->armsSize; ++arm) {
         for (int port = 0; port < 2; ++port) {
-            int txCtrlOffset = pTModule->EL6022[arm][port][0];
-            int txLengthOffset = pTModule->EL6022[arm][port][1];
-            int txOffset = pTModule->EL6022[arm][port][2];
-            int rxCtrlOffset = pTModule->EL6022[arm][port][3];
-            int rxLengthOffset = pTModule->EL6022[arm][port][4];
-            int rxOffset = pTModule->EL6022[arm][port][5];
-            if (txCtrlOffset < 0 || txLengthOffset < 0 || txOffset < 0 ||
-                rxCtrlOffset < 0 || rxLengthOffset < 0 || rxOffset < 0)
-                continue;
+            int offTxCtrl = pTModule->EL6022[arm][port][0];
+            int offTxData = pTModule->EL6022[arm][port][1];
+            int offRxCtrl = pTModule->EL6022[arm][port][2];
+            int offRxData = pTModule->EL6022[arm][port][3];
 
-            uint16_t txCtrl = EC_READ_U16(pTModule->domain1_pd + txCtrlOffset);
-            uint16_t rxCtrl = EC_READ_U16(pTModule->domain1_pd + rxCtrlOffset);
-            uint8_t inputLength = EC_READ_U8(pTModule->domain1_pd + rxLengthOffset);
-            uint8_t *rx = pTModule->el6022_rx[arm][port];
-            uint8_t *rxCount = &pTModule->el6022_rx_count[arm][port];
-            if ((rxCtrl & 0x0002) != ((txCtrl & 0x0002) ? 0x0002 : 0)) {
-                if (inputLength && inputLength <= 22 && *rxCount + inputLength <= 22) {
-                    for (uint8_t i = 0; i < inputLength; ++i)
-                        rx[(*rxCount)++] = EC_READ_U8(pTModule->domain1_pd + rxOffset + i);
-                } else {
-                    *rxCount = 0;
-                }
-                uint16_t outCtrl = EC_READ_U16(pTModule->domain1_pd + txCtrlOffset);
-                outCtrl = (outCtrl & ~0x0002) | ((rxCtrl & 0x0002) ? 0x0002 : 0);
-                EC_WRITE_U16(pTModule->domain1_pd + txCtrlOffset, outCtrl);
-            }
+            if (offTxCtrl < 0 || offRxCtrl < 0 || offTxData < 0 || offRxData < 0) continue;
 
-            if (*rxCount >= 9) {
-                for (uint8_t start = 0; start + 9 <= *rxCount; ++start) {
-                    if (rx[start] >= 1 && rx[start] <= (port == 0 ? 3 : 4) &&
-                        rx[start + 1] == 0x03 && rx[start + 2] == 4) {
-                        uint16_t crc = modbusCrc16(rx + start, 7);
-                        if (rx[start + 7] == (uint8_t)crc && rx[start + 8] == (uint8_t)(crc >> 8)) {
-                            int index = port == 0 ? rx[start] - 1 : 3 + rx[start] - 1;
-                            uint32_t raw = ((uint32_t)rx[start + 3] << 24) | ((uint32_t)rx[start + 4] << 16) |
-                                           ((uint32_t)rx[start + 5] << 8) | rx[start + 6];
-                            pTModule->sensor_value[arm][index] = (int32_t)raw;
-                            pTModule->sensor_valid[arm][index] = 1;
-                        }
+            uint16_t ctrl = EC_READ_U16(pTModule->domain1_pd + offTxCtrl);
+            uint16_t status = EC_READ_U16(pTModule->domain1_pd + offRxCtrl);
+            uint8_t sensor_count = (port == 0) ? 3 : 4;
+
+            switch (pTModule->el6022_state[arm][port]) {
+                case EL6022_ST_INIT: {
+                    ctrl |= 0x0004;
+                    EC_WRITE_U16(pTModule->domain1_pd + offTxCtrl, ctrl);
+                    if (status & 0x0004) {
+                        ctrl &= ~0x0004;
+                        EC_WRITE_U16(pTModule->domain1_pd + offTxCtrl, ctrl);
+                        pTModule->el6022_state[arm][port] = EL6022_ST_IDLE;
+                        printf(">>> EL6022 arm=%d port=%d Init OK, UART Ready!\n", arm, port);
                     }
+                    break;
                 }
-                *rxCount = 0;
-            }
 
-            if (pTModule->el6022_tx_len[arm][port] == 0 && now >= pTModule->el6022_next_poll_ms[arm][port]) {
-                uint8_t sensorCount = port == 0 ? 3 : 4;
-                uint8_t sensorIndex = pTModule->el6022_sensor_index[arm][port] % sensorCount;
-                uint8_t *request = pTModule->el6022_tx[arm][port];
-                request[0] = sensorIndex + 1;
-                request[1] = 0x03; request[2] = 0; request[3] = 0x14;
-                request[4] = 0; request[5] = 2;
-                uint16_t crc = modbusCrc16(request, 6);
-                request[6] = (uint8_t)crc; request[7] = (uint8_t)(crc >> 8);
-                pTModule->el6022_tx_len[arm][port] = 8;
-                pTModule->el6022_tx_pos[arm][port] = 0;
-                pTModule->el6022_sensor_index[arm][port] = (sensorIndex + 1) % sensorCount;
-                pTModule->el6022_next_poll_ms[arm][port] = now + 100;
-            }
+                case EL6022_ST_IDLE: {
+                    if (cycle >= pTModule->el6022_next_poll_ms[arm][port]) {
+                        uint8_t idx = pTModule->el6022_sensor_index[arm][port];
+                        uint16_t addr = pTModule->el6022_sensor_cfg[arm][port][idx][0];
+                        uint16_t reg  = pTModule->el6022_sensor_cfg[arm][port][idx][1];
+                        uint16_t cnt  = pTModule->el6022_sensor_cfg[arm][port][idx][2];
 
-            uint8_t txLen = pTModule->el6022_tx_len[arm][port];
-            uint16_t txStatus = EC_READ_U16(pTModule->domain1_pd + pTModule->EL6022[arm][port][6]);
-            if (txLen && (txStatus & 0x0002) == ((txCtrl & 0x0001) ? 0x0002 : 0)) {
-                uint8_t pos = pTModule->el6022_tx_pos[arm][port];
-                uint8_t chunk = txLen - pos;
-                if (chunk > 22) chunk = 22;
-                for (uint8_t i = 0; i < chunk; ++i)
-                    EC_WRITE_U8(pTModule->domain1_pd + txOffset + i, pTModule->el6022_tx[arm][port][pos + i]);
-                EC_WRITE_U8(pTModule->domain1_pd + txLengthOffset, chunk);
-                uint16_t request = txCtrl & ~0x0001;
-                request |= (txCtrl & 0x0001) ? 0 : 0x0001;
-                EC_WRITE_U16(pTModule->domain1_pd + txCtrlOffset, request);
-                pTModule->el6022_tx_pos[arm][port] += chunk;
-                if (pTModule->el6022_tx_pos[arm][port] >= txLen)
-                    pTModule->el6022_tx_len[arm][port] = 0;
+                        uint8_t *tx = pTModule->el6022_tx[arm][port];
+                        tx[0] = addr; tx[1] = 0x03;
+                        tx[2] = (reg >> 8) & 0xFF; tx[3] = reg & 0xFF;
+                        tx[4] = (cnt >> 8) & 0xFF; tx[5] = cnt & 0xFF;
+                        uint16_t crc = modbusCrc16(tx, 6);
+                        tx[6] = (uint8_t)crc; tx[7] = (uint8_t)(crc >> 8);
+
+                        for(int i = 0; i < 8; i++) EC_WRITE_U8(pTModule->domain1_pd + offTxData + i, tx[i]);
+                        
+                        ctrl &= 0x00FF; 
+                        ctrl |= (8 << 8);
+                        ctrl ^= 0x0001; // 翻转 Transmit Request
+                        EC_WRITE_U16(pTModule->domain1_pd + offTxCtrl, ctrl);
+
+                        // 记录发送前瞬间的状态字，用于接收时比对翻转
+                        pTModule->el6022_last_status[arm][port] = status; 
+
+                        pTModule->el6022_state[arm][port] = EL6022_ST_WAIT_TX_ACK;
+                        pTModule->el6022_timeout_ms[arm][port] = cycle + 30;
+                    }
+                    break;
+                }
+
+                case EL6022_ST_WAIT_TX_ACK: {
+                    // 判断 Transmit Accepted (Bit 0) 是否发生了翻转
+                    uint16_t txRequest = ctrl & 0x0001;
+                    if (((status & 0x0001) != 0) == (txRequest != 0)) {
+                        pTModule->el6022_last_status[arm][port] = status;
+                        pTModule->el6022_state[arm][port] = EL6022_ST_WAIT_RX;
+                        pTModule->el6022_timeout_ms[arm][port] = cycle + 50;
+                    } else if (cycle > pTModule->el6022_timeout_ms[arm][port]) {
+                        printf("EL6022 arm=%d port=%d TX Timeout! \n", arm, port);
+                        pTModule->el6022_sensor_index[arm][port] = (pTModule->el6022_sensor_index[arm][port] + 1) % sensor_count;
+                        pTModule->el6022_next_poll_ms[arm][port] = cycle + 100;
+                        pTModule->el6022_state[arm][port] = EL6022_ST_IDLE;
+                    }
+                    break;
+                }
+
+                case EL6022_ST_WAIT_RX: {
+                    // 判断 Receive Request (Bit 1) 是否发生了翻转
+                    if ((status & 0x0002) != (pTModule->el6022_last_status[arm][port] & 0x0002)) {
+                        uint8_t in_len = (status >> 8) & 0xFF;
+                        uint8_t idx = pTModule->el6022_sensor_index[arm][port];
+                        
+                        if (in_len >= 5) {
+                            uint8_t rx[22];
+                            for(int i = 0; i < in_len && i < 22; i++) 
+                                rx[i] = EC_READ_U8(pTModule->domain1_pd + offRxData + i);
+                            
+                            if (rx[0] == pTModule->el6022_sensor_cfg[arm][port][idx][0] && rx[1] == 0x03) {
+                                uint16_t crc = modbusCrc16(rx, in_len - 2);
+                                if (rx[in_len - 2] == (uint8_t)crc && rx[in_len - 1] == (uint8_t)(crc >> 8)) {
+                                    // 【修改】小端浮点数解析
+                                    float angle_val = 0.0f;
+                                    uint8_t f_bytes[4] = { rx[3], rx[4], rx[5], rx[6] };
+                                    memcpy(&angle_val, f_bytes, 4);
+                                    
+                                    // 乘 1000 存为 int32，便于你原来的系统兼容
+                                    int32_t val = (int32_t)(angle_val * 1000); 
+                                    
+                                    int sensor_idx = (port == 0) ? idx : (3 + idx);
+                                    pTModule->sensor_value[arm][sensor_idx] = val;
+                                    pTModule->sensor_valid[arm][sensor_idx] = 1;
+                                    
+                                    printf("SUCCESS: arm=%d port=%d Sensor Addr %d = %.3f deg\n", arm, port, rx[0], angle_val);
+                                }
+                            }
+                        }
+
+                        // 翻转 Receive Accepted (Bit 1)
+                        ctrl ^= 0x0002;
+                        EC_WRITE_U16(pTModule->domain1_pd + offTxCtrl, ctrl);
+
+                        uint16_t period = pTModule->el6022_sensor_cfg[arm][port][idx][3];
+                        pTModule->el6022_sensor_index[arm][port] = (idx + 1) % sensor_count;
+                        pTModule->el6022_next_poll_ms[arm][port] = cycle + period;
+                        pTModule->el6022_state[arm][port] = EL6022_ST_IDLE;
+                    } else if (cycle > pTModule->el6022_timeout_ms[arm][port]) {
+                        // 限制打印频率，避免刷屏（每个端口独立计数）
+                        static uint32_t last_print[MASTER_ARMS_MAX_SIZE][2] = {0};
+                        if (cycle - last_print[arm][port] > 500) {
+                            printf("EL6022 arm=%d port=%d No response from Sensor Addr %d\n", arm, port, pTModule->el6022_sensor_cfg[arm][port][pTModule->el6022_sensor_index[arm][port]][0]);
+                            last_print[arm][port] = cycle; 
+                        }
+                        ctrl ^= 0x0002; // 强制翻转清空
+                        EC_WRITE_U16(pTModule->domain1_pd + offTxCtrl, ctrl);
+                        
+                        uint8_t idx = pTModule->el6022_sensor_index[arm][port];
+                        pTModule->el6022_sensor_index[arm][port] = (idx + 1) % sensor_count;
+                        pTModule->el6022_next_poll_ms[arm][port] = cycle + 100;
+                        pTModule->el6022_state[arm][port] = EL6022_ST_IDLE;
+                    }
+                    break;
+                }
             }
         }
     }
@@ -1840,8 +1972,8 @@ static void pollEL6022(ARMS_MASTER_THREAD_INFO *pTModule)
             telemetry.sensor_valid[arm][sensor] = pTModule->sensor_valid[arm][sensor];
         }
         for (int port = 0; port < 2; ++port) {
-            int statusOffset = pTModule->EL6022[arm][port][3];
-            int dataOffset = pTModule->EL6022[arm][port][5];
+            int statusOffset = pTModule->EL6022[arm][port][2];
+            int dataOffset = pTModule->EL6022[arm][port][3];
             if (statusOffset >= 0 && dataOffset >= 0) {
                 telemetry.el6022_status[arm][port] = EC_READ_U16(pTModule->domain1_pd + statusOffset);
                 for (int byte = 0; byte < MASTER_TELEMETRY_SERIAL_BYTES; ++byte)
@@ -1938,19 +2070,19 @@ static void reflash_rpdo_Ebus(ARMS_MASTER_THREAD_INFO *pTModule)
                 previous_position_valid[arm][motor] = true;
                 double position_counts_per_second = position_delta_valid ?
                     (double)position_delta / position_delta_seconds : 0.0;
-                printf("Servo master=%d arm=%d motor=%d requested_deg_s=%g ramp_deg_s=%g target_counts_s=%d written60ff_counts_s=%d cw=0x%04x sw=0x%04x error=0x%04x pos6064=%d pos_delta=%" PRId64 " counts dt=%.6f s pos_diff=%.3f counts/s (%s) vel606c_raw=%d fsa=%d mode6061=%d sdo_state=%d offsets(tv,pos,vel)=%d,%d,%d WC=%u/%d\n",
-                       pTModule->masterId, arm, motor,
-                       pTModule->upper_target_velocity[arm][motor],
-                       pTModule->upper_last_v_cmd[arm][motor], state->target_velocity,
-                       EC_READ_S32(pTModule->domain1_pd + pdo->target_velocity),
-                       state->ctrl_word, state->status_word, state->error_code,
-                       state->Position_value, position_delta, position_delta_seconds,
-                       position_counts_per_second,
-                       position_delta_valid ? "valid" : "invalid-first-sample",
-                       state->velocity_value, pTModule->arm_fsa[arm],
-                       pdo->mode_display, pdo->mode_request_state,
-                       pdo->target_velocity, pdo->Position_value, pdo->velocity_value,
-                       pTModule->domain1_state.working_counter, pTModule->domain1_state.wc_state);
+                // printf("Servo master=%d arm=%d motor=%d requested_deg_s=%g ramp_deg_s=%g target_counts_s=%d written60ff_counts_s=%d cw=0x%04x sw=0x%04x error=0x%04x pos6064=%d pos_delta=%" PRId64 " counts dt=%.6f s pos_diff=%.3f counts/s (%s) vel606c_raw=%d fsa=%d mode6061=%d sdo_state=%d offsets(tv,pos,vel)=%d,%d,%d WC=%u/%d\n",
+                //        pTModule->masterId, arm, motor,
+                //        pTModule->upper_target_velocity[arm][motor],
+                //        pTModule->upper_last_v_cmd[arm][motor], state->target_velocity,
+                //        EC_READ_S32(pTModule->domain1_pd + pdo->target_velocity),
+                //        state->ctrl_word, state->status_word, state->error_code,
+                //        state->Position_value, position_delta, position_delta_seconds,
+                //        position_counts_per_second,
+                //        position_delta_valid ? "valid" : "invalid-first-sample",
+                //        state->velocity_value, pTModule->arm_fsa[arm],
+                //        pdo->mode_display, pdo->mode_request_state,
+                //        pdo->target_velocity, pdo->Position_value, pdo->velocity_value,
+                //        pTModule->domain1_state.working_counter, pTModule->domain1_state.wc_state);
             }
         }
     }

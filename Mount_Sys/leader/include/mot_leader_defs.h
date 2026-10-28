@@ -379,6 +379,14 @@ typedef struct
   
 } ETHERCAT_THREAD_INFO,SERIAL_THREAD_INFO;
 
+// =================== 新增：EL6022 轮询状态机 根据倍福EL6022手册===================
+typedef enum {
+    EL6022_ST_INIT = 0,       // 上电初始化握手
+    EL6022_ST_IDLE,           // 空闲，准备发送
+    EL6022_ST_WAIT_TX_ACK,    // 等待发送完成
+    EL6022_ST_WAIT_RX         // 等待接收应答
+} EL6022_STATE_E;
+
 //master线程结构体信息master thread info
 typedef struct
 {
@@ -447,6 +455,15 @@ typedef struct
  
   //EL6022 PDO 偏移和两端口 Modbus RTU 轮询状态
   int EL6022[MASTER_ARMS_MAX_SIZE][2][8];
+
+  EL6022_STATE_E el6022_state[MASTER_ARMS_MAX_SIZE][2];
+  uint32_t el6022_timeout_ms[MASTER_ARMS_MAX_SIZE][2];
+  uint8_t  el6022_inited[MASTER_ARMS_MAX_SIZE][2];
+  uint16_t el6022_last_ctrl[MASTER_ARMS_MAX_SIZE][2]; // 用于记录翻转前的控制字
+
+  // 传感器配置表：[臂][通道][0=地址, 1=寄存器地址, 2=寄存器数量, 3=轮询周期ms]
+  uint16_t el6022_sensor_cfg[MASTER_ARMS_MAX_SIZE][2][4][4]; 
+
   uint8_t el6022_tx[MASTER_ARMS_MAX_SIZE][2][22];
   uint8_t el6022_tx_len[MASTER_ARMS_MAX_SIZE][2];
   uint8_t el6022_tx_pos[MASTER_ARMS_MAX_SIZE][2];
@@ -456,6 +473,7 @@ typedef struct
   uint32_t el6022_next_poll_ms[MASTER_ARMS_MAX_SIZE][2];
   int32_t sensor_value[MASTER_ARMS_MAX_SIZE][7];
   uint8_t sensor_valid[MASTER_ARMS_MAX_SIZE][7];
+  uint16_t el6022_last_status[MASTER_ARMS_MAX_SIZE][2]; // 记录发送前的状态字，用于比对翻转
 
   motec_motors motors[MASTER_ARMS_MAX_SIZE][ARM_SLAVES_PER_ARM];
 /****************************以下是igh主站使用 end*****************************/
