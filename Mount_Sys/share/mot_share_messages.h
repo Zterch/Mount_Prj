@@ -86,7 +86,7 @@ typedef struct  {
 
 
 //定义底盘控制板发送消息
-#define MOTEC_SIZE 9
+#define MOTEC_SIZE 12
 
 //发送到底盘主站的控制命令消息
 typedef struct

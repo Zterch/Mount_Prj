@@ -1907,7 +1907,7 @@ static void pollEL6022(ARMS_MASTER_THREAD_INFO *pTModule)
                                     pTModule->sensor_value[arm][sensor_idx] = val;
                                     pTModule->sensor_valid[arm][sensor_idx] = 1;
                                     
-                                    printf("SUCCESS: arm=%d port=%d Sensor Addr %d = %.3f deg\n", arm, port, rx[0], angle_val);
+                                    //printf("SUCCESS: arm=%d port=%d Sensor Addr %d = %.3f deg\n", arm, port, rx[0], angle_val);
                                 }
                             }
                         }
@@ -1924,7 +1924,7 @@ static void pollEL6022(ARMS_MASTER_THREAD_INFO *pTModule)
                         // 限制打印频率，避免刷屏（每个端口独立计数）
                         static uint32_t last_print[MASTER_ARMS_MAX_SIZE][2] = {0};
                         if (cycle - last_print[arm][port] > 500) {
-                            printf("EL6022 arm=%d port=%d No response from Sensor Addr %d\n", arm, port, pTModule->el6022_sensor_cfg[arm][port][pTModule->el6022_sensor_index[arm][port]][0]);
+                            //printf("EL6022 arm=%d port=%d No response from Sensor Addr %d\n", arm, port, pTModule->el6022_sensor_cfg[arm][port][pTModule->el6022_sensor_index[arm][port]][0]);
                             last_print[arm][port] = cycle; 
                         }
                         ctrl ^= 0x0002; // 强制翻转清空

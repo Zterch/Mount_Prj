@@ -22,32 +22,22 @@
 
 /*Config PDOs 只能使用nimotion默认的PDO进行配置*/
 static ec_pdo_entry_info_t ni_pdo_entries[] = {
-    {0x6040, 0x00, 16}, /* ControlWord */
-    {0x6060, 0x00, 8}, /* ModeOperation */
-    {0x0000, 0x00, 8}, /* Gap */
-    {0x607a, 0x00, 32}, /* Position target value */
-    {0x6042, 0x00, 16}, /* VITargVelocity */
-    {0x6071, 0x00, 16}, /* Target torque  */
-    {0x60c1, 0x01, 32}, /* s00_NumberEntries     */
-    {0x60ff, 0x00, 32}, /* Target velocity  */
-    {0x2031, 0x02, 16}, /* VDI_VirtualLevelCommSet       */
+    {0x6040, 0x00, 16}, /* C */
+    {0x607a, 0x00, 32}, /* T */
+    {0x60ff, 0x00, 32}, /* T */
+    {0x6071, 0x00, 16}, /* T */
 
-    {0x603f, 0x00, 16}, /* ErrorCode */
-    {0x6041, 0x00, 16}, /* StatusWord */
-    {0x6061, 0x00, 8}, /* Modes of operation display */
-    {0x0000, 0x00, 8}, /* Gap */
-    {0x6064, 0x00, 32}, /* Position actual user value  */
-    {0x6063, 0x00, 32}, /* Position actual encoder value */
-    {0x6069, 0x00, 32}, /* Velocity sensor actual value  */
-    {0x606c, 0x00, 32}, /* Velocity actual value  */
-    {0x6077, 0x00, 16}, /* Torque actual value  */
-    {0x6078, 0x00, 16}, /* Current actual value  */
-    {0x200b, 0x05, 16}, /* InterTorqueRef        */
+    {0x6041, 0x00, 16}, /* S */
+    {0x6064, 0x00, 32}, /* P */
+    {0x606c, 0x00, 32}, /* V */
+    {0x6077, 0x00, 16}, /* T */
+    {0x60f4, 0x00, 32}, /* F */
+    {0x603f, 0x00, 16}, /* E */
 };
 
 static ec_pdo_info_t ni_pdos[] = {
-    {0x1600, 9, ni_pdo_entries + 0}, /* RxPDO0 */
-    {0x1a00, 11, ni_pdo_entries + 9}, /* TxPDO0 */
+    {0x1601, 4, ni_pdo_entries + 0}, /* RxPDO0 */
+    {0x1a01, 6, ni_pdo_entries + 4}, /* TxPDO0 */
 };
 
 static ec_sync_info_t motec_syncs[] = {
@@ -58,9 +48,86 @@ static ec_sync_info_t motec_syncs[] = {
     {0xff}
 };
 
+/*Config Sensor PDOs*/ //当前使用的艾莫迅的模块做测试
+static ec_pdo_entry_info_t sensor_pdo_entries[] = {
+    {0x7001, 0x01, 8}, /* slave Address */
+    {0x7001, 0x02, 8}, /* Data Valid */
+    {0x7001, 0x03, 32}, /* coil_1 */
+    {0x7001, 0x04, 32}, /* coil_2 */
+    {0x7001, 0x05, 16}, /* hold_reg data_1 */
+    {0x7001, 0x06, 16}, /* hold_reg data_2 */
+    {0x7001, 0x07, 16}, /* hold_reg data_3 */
+    {0x7001, 0x08, 16}, /* hold_reg data_4 */
+    {0x7001, 0x09, 16}, /* hold_reg data_5 */
+    {0x7001, 0x0a, 16}, /* hold_reg data_6 */
+    {0x7001, 0x0b, 16}, /* hold_reg data_7 */
+    {0x7001, 0x0c, 16}, /* hold_reg data_8 */
+    {0x7001, 0x0d, 16}, /* hold_reg data_9 */
+    {0x7001, 0x0e, 16}, /* hold_reg data_10 */
+    {0x7001, 0x0f, 16}, /* hold_reg data_11 */
+    {0x7001, 0x10, 16}, /* hold_reg data_12 */
+    {0x7001, 0x11, 16}, /* hold_reg data_13 */
+    {0x7001, 0x12, 16}, /* hold_reg data_14 */
+    {0x7001, 0x13, 16}, /* hold_reg data_15 */
+    {0x7001, 0x14, 16}, /* hold_reg data_16 */
+    {0x6001, 0x01, 8}, /* slave Address */
+    {0x6001, 0x02, 8}, /* Data Valid */
+    {0x6001, 0x03, 32}, /* D_Input_1 */
+    {0x6001, 0x04, 32}, /* D_Input_2 */
+    {0x6001, 0x05, 16}, /* Input reg data_1 */
+    {0x6001, 0x06, 16}, /* Input reg data_2 */
+    {0x6001, 0x07, 16}, /* Input reg data_3 */
+    {0x6001, 0x08, 16}, /* Input reg data_4 */
+    {0x6001, 0x09, 16}, /* Input reg data_5 */
+    {0x6001, 0x0a, 16}, /* Input reg data_6 */
+    {0x6001, 0x0b, 16}, /* Input reg data_7 */
+    {0x6001, 0x0c, 16}, /* Input reg data_8 */
+    {0x6001, 0x0d, 16}, /* Input reg data_9 */
+    {0x6001, 0x0e, 16}, /* Input reg data_10 */
+    {0x6001, 0x0f, 16}, /* Input reg data_11 */
+    {0x6001, 0x10, 16}, /* Input reg data_12 */
+    {0x6001, 0x11, 16}, /* Input reg data_13 */
+    {0x6001, 0x12, 16}, /* Input reg data_14 */
+    {0x6001, 0x13, 16}, /* Input reg data_15 */
+    {0x6001, 0x14, 16}, /* Input reg data_16 */
+    {0x6002, 0x01, 8}, /* slave Address */
+    {0x6002, 0x02, 8}, /* Data Valid */
+    {0x6002, 0x03, 32}, /* coil_1 */
+    {0x6002, 0x04, 32}, /* coil_2 */
+    {0x6002, 0x05, 16}, /* hold_reg data_1 */
+    {0x6002, 0x06, 16}, /* hold_reg data_2 */
+    {0x6002, 0x07, 16}, /* hold_reg data_3 */
+    {0x6002, 0x08, 16}, /* hold_reg data_4 */
+    {0x6002, 0x09, 16}, /* hold_reg data_5 */
+    {0x6002, 0x0a, 16}, /* hold_reg data_6 */
+    {0x6002, 0x0b, 16}, /* hold_reg data_7 */
+    {0x6002, 0x0c, 16}, /* hold_reg data_8 */
+    {0x6002, 0x0d, 16}, /* hold_reg data_9 */
+    {0x6002, 0x0e, 16}, /* hold_reg data_10 */
+    {0x6002, 0x0f, 16}, /* hold_reg data_11 */
+    {0x6002, 0x10, 16}, /* hold_reg data_12 */
+    {0x6002, 0x11, 16}, /* hold_reg data_13 */
+    {0x6002, 0x12, 16}, /* hold_reg data_14 */
+    {0x6002, 0x13, 16}, /* hold_reg data_15 */
+    {0x6002, 0x14, 16}, /* hold_reg data_16 */
+};
+
+ec_pdo_info_t sensor_pdos[] = {
+    {0x1601, 20, sensor_pdo_entries + 0}, /* Rx-Mapping Master data to slave */
+    {0x1a01, 20, sensor_pdo_entries + 20}, /* Tx-Mapping Master data from slave */
+    {0x1a02, 20, sensor_pdo_entries + 40}, /* Tx-Mapping Master data from slave */
+};
+
+ec_sync_info_t sensor_syncs[] = {
+    {0, EC_DIR_OUTPUT, 0, NULL, EC_WD_DISABLE},
+    {1, EC_DIR_INPUT, 0, NULL, EC_WD_DISABLE},
+    {2, EC_DIR_OUTPUT, 1, sensor_pdos + 0, EC_WD_ENABLE},
+    {3, EC_DIR_INPUT, 2, sensor_pdos + 1, EC_WD_DISABLE},
+    {0xff}
+};
+
 
 static int initchassis(CHASSIS_MASTER_THREAD_INFO *pTModule);
-
 
 static void  cyc_rotate_pos_upper_cmd(CHASSIS_MASTER_THREAD_INFO *pTModule);
 static void  cyc_vel_upper_cmd(CHASSIS_MASTER_THREAD_INFO *pTModule);
@@ -86,12 +153,12 @@ static int  createMaster(int mid,ec_master_t **pms,ec_domain_t **pdi)
         *pms = ecrt_request_master(mid);
         if (*pms==NULL)
         {
-            printf("#########:create master%d failed\n\r",mid);
+            printf("#########:create chassis master%d failed\n\r",mid);
             iRet = -1;
         }else{
-            printf("#########:create master%d OK\n\r",mid);
+            printf("#########:create chassis master%d OK\n\r",mid);
             *pdi = ecrt_master_create_domain(*pms);
-            printf("#########:create master%d domain1 OK\n\r",mid);
+            printf("#########:create chassis master%d domain1 OK\n\r",mid);
             iRet = 0;
         }
     }
@@ -310,7 +377,7 @@ static int scanChassisSlaves(CHASSIS_MASTER_THREAD_INFO *pTModule)
     list_add_tail(&childSlave->list,&pTModule->slaves_inf.list);
     pTModule->slaves_inf.childSlaveSize++;
 
-    printf("********* %s %d %d \n", childSlave->slave_in.name,childSlave->slave_in.alias,childSlave->slave_in.position );
+    printf("****chassis***** %s %d %d \n", childSlave->slave_in.name,childSlave->slave_in.alias,childSlave->slave_in.position );
   }
   return 0;
 }
@@ -324,7 +391,8 @@ static int confChassisSlavesPdos(CHASSIS_MASTER_THREAD_INFO *pTModule)
     }
 
     //遍历从站，找到所有伺服电机，并通过sdo配置所使用的pdo
-    int motorIndex=0;
+    int motorIndex = 0;
+    int sensorIndex = 0;
 
     EK1100_slaves_inf *inf_t = NULL ;
     list_for_each_entry(inf_t, &pTModule->slaves_inf.list, list)
@@ -334,40 +402,49 @@ static int confChassisSlavesPdos(CHASSIS_MASTER_THREAD_INFO *pTModule)
 
         if(sc==NULL)
         {
-            printf("ecrt_master_slave_config ********* NULL\n");
+            printf("chassis ecrt_master_slave_config ********* NULL\n");
             return -1;
         }
         inf_t->slave_conf = sc;
         //机械臂的somanet结点，
-        if( (strstr(inf_t->slave_in.name,"PMM6020") != NULL) || 
-            (strstr(inf_t->slave_in.name,"PMM8075") != NULL) ||
-            (strstr(inf_t->slave_in.name,"PSM6040") != NULL)
-            )
+        if( (strstr(inf_t->slave_in.name,"KDE") != NULL) )
         {
-            ecrt_slave_config_sdo16(sc, 0x6040, 0, 0x80 );
-            ecrt_slave_config_sdo8(sc, 0x6060, 0, 9);
+            ecrt_slave_config_sdo16(sc, 0x6040, 0, 0x80 );//清除错误
+            ecrt_slave_config_sdo8(sc, 0x6060, 0, 9);     //配置速度模式
             if (ecrt_slave_config_pdos(sc, EC_END, motec_syncs) == 0)
             {
+                printf("*Success to configuring Chassis servo PDOs*\n");
                 //配置域
                 pTModule->nimotion_pdos[motorIndex].ctrl_word = ecrt_slave_config_reg_pdo_entry(sc,0x6040, 0, pTModule->domain1, NULL);
-                //pTModule->nimotion_pdos[motorIndex].operation_mode = ecrt_slave_config_reg_pdo_entry(sc,0x6060, 0, pTModule->domain1, NULL);
                 pTModule->nimotion_pdos[motorIndex].target_position = ecrt_slave_config_reg_pdo_entry(sc,0x607A, 0, pTModule->domain1, NULL);
                 pTModule->nimotion_pdos[motorIndex].target_velocity = ecrt_slave_config_reg_pdo_entry(sc,0x60FF, 0, pTModule->domain1, NULL);
+                pTModule->nimotion_pdos[motorIndex].target_torque = ecrt_slave_config_reg_pdo_entry(sc,0x6071, 0, pTModule->domain1, NULL);
+
                 pTModule->nimotion_pdos[motorIndex].status_word = ecrt_slave_config_reg_pdo_entry(sc,0x6041, 0, pTModule->domain1, NULL);
-                //pTModule->nimotion_pdos[motorIndex].mode_display = ecrt_slave_config_reg_pdo_entry(sc,0x6061, 0, pTModule->domain1, NULL);
                 pTModule->nimotion_pdos[motorIndex].Position_value = ecrt_slave_config_reg_pdo_entry(sc,0x6064, 0, pTModule->domain1, NULL);
                 pTModule->nimotion_pdos[motorIndex].velocity_value = ecrt_slave_config_reg_pdo_entry(sc,0x606c, 0, pTModule->domain1, NULL);
+                pTModule->nimotion_pdos[motorIndex].torque_act_value = ecrt_slave_config_reg_pdo_entry(sc,0x6077, 0, pTModule->domain1, NULL);
+                pTModule->nimotion_pdos[motorIndex].following_error = ecrt_slave_config_reg_pdo_entry(sc,0x60f4, 0, pTModule->domain1, NULL);
+                pTModule->nimotion_pdos[motorIndex].error_code = ecrt_slave_config_reg_pdo_entry(sc,0x603f, 0, pTModule->domain1, NULL);
+           
             }
             motorIndex++;
         }
-        //机械臂的EC-3045结点，
-        if(strstr(inf_t->slave_in.name,"EC-3400") != NULL)
+        //机械臂的传感器结点，
+        if(strstr(inf_t->slave_in.name,"AMSAMOTION_EC_MB") != NULL)
         {   
-            printf("EC-3045 EC-3045\n");
+            printf("chassis AMSAMOTION_EC_MB\n");
+            if (ecrt_slave_config_pdos(sc, EC_END, sensor_syncs) == 0)
+            {
+                printf("*Success to configuring Chassis Sensor PDOs*\n");
+                //配置域
+           
+            }
+            sensorIndex++;
         }
     }
     pTModule->motor_size = motorIndex;
-    printf("###########################\n");
+    printf("#############chassis : motor sizes: %d, sensor sizes: %d##############\n", motorIndex, sensorIndex);
     return 0;
 }
 
@@ -392,22 +469,22 @@ static int activeChassisMater(CHASSIS_MASTER_THREAD_INFO *pTModule)
     }
     int ret = ecrt_master_select_reference_clock(pTModule->master, NULL);
     if (ret < 0) {
-        printf("Failed to select reference clock\n");
+        printf("chassis : Failed to select reference clock\n");
         return iRet;
     }
     
-    printf("Activating master...\n");
+    printf("Activating chassic master...\n");
     if (ecrt_master_activate(pTModule->master)) {
         return iRet;
     }
     else
     {
-        printf("*Master activated*\n");
+        printf("*chassis Master activated*\n");
     }
     if (!(pTModule->domain1_pd = ecrt_domain_data(pTModule->domain1))) {
-        printf("ecrt_domain_data EXIT_FAILURE\n");
+        printf("chassis ecrt_domain_data EXIT_FAILURE\n");
     }
-    printf("starting 1000HZ pdo\n");
+    printf("chassis starting 1000HZ pdo\n");
     //开启1000HZ循环
     pTModule->masterActivated=true;
 
@@ -859,8 +936,8 @@ void* ethercatChassisThread(void* pModule)
 
         /******************************************实时传输PDO******************************************/
         //读取交换的数据
-        // for (int i = 0; i < pTModule->motor_size; i++)
-        // {
+        for (int i = 0; i < pTModule->motor_size; i++)
+        {
         //     //nimotion 伺服电机，读取速度单位是RPM  位置单位是：用户单位
         //     pTModule->ni_stword[i] = EC_READ_U16(pTModule->domain1_pd + pTModule->nimotion_pdos[i].status_word );
             
@@ -879,22 +956,24 @@ void* ethercatChassisThread(void* pModule)
         //         pTModule->r_pos[(i-1)/2] = posU*(R_POS_TO_MM*CHASSIS_DIR[i])- pTModule->r_pos_zore[i/2];
         //         pTModule->r_speed[(i-1)/2] =speedU * (R_VEL_RPM_TO_DEG*CHASSIS_DIR[i]);
         //     }
+                pTModule->ni_stword[i] = EC_READ_U16(pTModule->domain1_pd + pTModule->nimotion_pdos[i].status_word );
 
-        // }
+
+        }
 
         // /******************************************有限状态机*******************************************/
-        // chassisFsa(pTModule);
+        //chassisFsa(pTModule);
 
         // /******************************************实时传输PDO******************************************/
-        // //写入交换somanet的数据，1ms 刷新写入一次
-        // for (int i = 0; i < pTModule->motor_size; i++)
-        // {
-        //     //将从站输出的值转换成PDO类型的
-        //     //sensors_write_i_to_f(pTModule,i);
-        //     EC_WRITE_U16(pTModule->domain1_pd + pTModule->nimotion_pdos[i].ctrl_word, pTModule->motors[i].ctrl_word);
-        //     EC_WRITE_U16(pTModule->domain1_pd + pTModule->nimotion_pdos[i].operation_mode, pTModule->motors[i].operation_mode);
-        //     EC_WRITE_S32(pTModule->domain1_pd + pTModule->nimotion_pdos[i].target_velocity, pTModule->motors[i].target_velocity);
-        // }        
+        //写入交换somanet的数据，1ms 刷新写入一次
+        for (int i = 0; i < pTModule->motor_size; i++)
+        {
+            //将从站输出的值转换成PDO类型的
+            //sensors_write_i_to_f(pTModule,i);
+            EC_WRITE_U16(pTModule->domain1_pd + pTModule->nimotion_pdos[i].ctrl_word, pTModule->motors[i].ctrl_word);
+            //EC_WRITE_U16(pTModule->domain1_pd + pTModule->nimotion_pdos[i].operation_mode, pTModule->motors[i].operation_mode);
+            EC_WRITE_S32(pTModule->domain1_pd + pTModule->nimotion_pdos[i].target_velocity, pTModule->motors[i].target_velocity);
+        }        
 
         //  /**< Application-layer states of all slaves.
         //                           The states are coded in the lower 4 bits.
